@@ -25,7 +25,7 @@ Known data gaps (all correct-by-design, not bugs — see ARCHITECTURE §6):
 - **Cache:** Redis (screen-result cache + external-API rate limiting)
 - **Frontend:** React + Vite, TanStack Query, lightweight-charts
 - **ETL:** Python, Prefect (plain cron for MVP); raw filings archived to S3/MinIO
-- **Data sources:** SEC EDGAR XBRL bulk (fundamentals + SIC/exchange reference, free); Polygon grouped-daily EOD (prices, free tier — one call returns the whole US market; swap in `etl/extract/prices.py` alone)
+- **Data sources:** SEC EDGAR bulk zips (fundamentals + SIC/exchange reference, free — one download each, streamed per CIK); Polygon grouped-daily EOD (prices, free tier — one call returns the whole US market; swap in `etl/extract/prices.py` alone)
 
 ## Module layout
 - `web/` — React screener UI: query-builder, results grid, company page *(built)*
@@ -52,7 +52,8 @@ Setup: `docker compose up -d` then `alembic upgrade head`. Install deps with
 `pip install -e ".[api,dev]"` (omit extras for an ETL-only deploy).
 - Infra: `docker compose up -d` (Postgres+TimescaleDB, Redis)
 - Migrations: `alembic upgrade head`
-- ETL run (sample): `python -m etl --sample`
+- ETL run (full ~7.6k universe): `python -m etl`
+- ETL run (20-ticker sample): `python -m etl --sample`
 - Price backfill (one-off, resumable): `python -m etl.extract.prices --days 504`
 - API dev server: `uvicorn api.main:app --reload`
 - Tests: `pytest etl/tests/ api/tests/`

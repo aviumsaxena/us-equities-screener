@@ -15,6 +15,7 @@ Both land once the underlying data is reliably present for all tickers.
 """
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from decimal import Decimal
 from typing import Optional
@@ -38,9 +39,20 @@ PERIODIC_COLUMNS = (
 )
 METRICS_COLUMNS = tuple(c.name for c in ScreenerMetrics.__table__.columns if c.name != "security_id")
 
+log = logging.getLogger("etl.gold")
 
-def _latest_facts(session) -> list:
-    """One row per (security_id, concept_key, fiscal_year, fiscal_period) at its latest version."""
+# companies per pass; bounds peak memory independent of universe size
+CHUNK_SIZE = 500
+
+
+def _latest_facts(session, security_ids: list[int]) -> list:
+    """Latest version of every fact, for one chunk of companies.
+
+    The restatement dedup is done by Postgres (DISTINCT ON + version DESC), not
+    in Python. Pulling the whole table and deduping client-side worked at 20
+    tickers but would drag several GB into memory across the full ~7.6k-company
+    universe -- hence both the DISTINCT ON and the chunking by security_id.
+    """
     stmt = (
         select(
             FinancialFact.security_id,
@@ -51,20 +63,22 @@ def _latest_facts(session) -> list:
             FinancialFact.value,
         )
         .join(FinancialConcept, FinancialConcept.concept_id == FinancialFact.concept_id)
+        .where(FinancialFact.security_id.in_(security_ids))
+        .distinct(
+            FinancialFact.security_id,
+            FinancialConcept.concept_key,
+            FinancialFact.fiscal_year,
+            FinancialFact.fiscal_period,
+        )
         .order_by(
             FinancialFact.security_id,
             FinancialConcept.concept_key,
             FinancialFact.fiscal_year,
             FinancialFact.fiscal_period,
-            FinancialFact.version.desc(),
+            FinancialFact.version.desc(),  # DISTINCT ON keeps this first row
         )
     )
-    rows = session.execute(stmt).all()
-    latest = {}
-    for r in rows:
-        key = (r.security_id, r.concept_key, r.fiscal_year, r.fiscal_period)
-        latest.setdefault(key, r)  # version DESC order -> first hit is the latest version
-    return list(latest.values())
+    return session.execute(stmt).all()
 
 
 def _latest_prices(session) -> dict:
@@ -248,43 +262,64 @@ def _apply_price_metrics(row, price_row, *, revenue, total_equity, eps, shares) 
     row["pb"] = _safe_div(market_cap, total_equity)
 
 
-def run_gold() -> int:
-    with get_session() as session:
-        rows = _latest_facts(session)
-        companies = {c.security_id: c for c in session.execute(select(Company)).scalars()}
-        prices = _latest_prices(session)
-
-    pivoted = _pivot(rows)
-
-    periodic_rows: list[dict] = []
-    metrics_rows: list[dict] = []
-    for security_id, periods in pivoted.items():
-        company = companies.get(security_id)
-        if company is None:
-            continue
-        periodic_rows.extend(_build_fundamentals_periodic_rows(security_id, periods))
-        metrics_rows.append(
-            _build_screener_metrics_row(security_id, periods, company, prices.get(security_id))
+def _flush(session, periodic_rows: list[dict], metrics_rows: list[dict]) -> None:
+    if periodic_rows:
+        stmt = insert(FundamentalsPeriodic)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["security_id", "period_end"],
+            set_={col: getattr(stmt.excluded, col) for col in PERIODIC_COLUMNS},
         )
+        session.execute(stmt, periodic_rows)
 
+    if metrics_rows:
+        stmt = insert(ScreenerMetrics)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["security_id"],
+            set_={col: getattr(stmt.excluded, col) for col in METRICS_COLUMNS},
+        )
+        session.execute(stmt, metrics_rows)
+
+
+def run_gold(chunk_size: int = CHUNK_SIZE) -> int:
+    """Recompute the gold tables for every company.
+
+    Streams the universe in chunks so peak memory is bounded by `chunk_size`
+    companies, not by the size of financial_facts -- the whole table is millions
+    of rows once the universe is the real ~7.6k companies.
+    """
     with get_session() as session:
-        if periodic_rows:
-            stmt = insert(FundamentalsPeriodic)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["security_id", "period_end"],
-                set_={col: getattr(stmt.excluded, col) for col in PERIODIC_COLUMNS},
-            )
-            session.execute(stmt, periodic_rows)
+        companies = {c.security_id: c for c in session.execute(select(Company)).scalars()}
+        prices = _latest_prices(session)  # one row per company; small
 
-        if metrics_rows:
-            stmt = insert(ScreenerMetrics)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["security_id"],
-                set_={col: getattr(stmt.excluded, col) for col in METRICS_COLUMNS},
-            )
-            session.execute(stmt, metrics_rows)
+    security_ids = sorted(companies)
+    written = 0
 
-    return len(metrics_rows)
+    for start in range(0, len(security_ids), chunk_size):
+        chunk = security_ids[start : start + chunk_size]
+
+        with get_session() as session:
+            facts = _latest_facts(session, chunk)
+
+        pivoted = _pivot(facts)
+
+        periodic_rows: list[dict] = []
+        metrics_rows: list[dict] = []
+        for security_id, periods in pivoted.items():
+            company = companies.get(security_id)
+            if company is None:
+                continue
+            periodic_rows.extend(_build_fundamentals_periodic_rows(security_id, periods))
+            metrics_rows.append(
+                _build_screener_metrics_row(security_id, periods, company, prices.get(security_id))
+            )
+
+        with get_session() as session:
+            _flush(session, periodic_rows, metrics_rows)
+
+        written += len(metrics_rows)
+        log.info("gold: %d/%d companies", min(start + chunk_size, len(security_ids)), len(security_ids))
+
+    return written
 
 
 if __name__ == "__main__":

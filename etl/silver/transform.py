@@ -15,28 +15,24 @@ become restatement versions.
 """
 from __future__ import annotations
 
-import json
+import logging
 from datetime import date
-from pathlib import Path
 from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
-from etl.config import settings
+from etl import bulk
 from etl.db import get_session
-from etl.models import Company, FinancialConcept, FinancialFact
+from etl.models import FinancialConcept, FinancialFact
+
+log = logging.getLogger("etl.silver")
 
 # matches the yearly partitions created in alembic/versions/0003_*
 MIN_FISCAL_YEAR = 2016
 
 ANNUAL_DURATION_DAYS = range(340, 386)
 QUARTER_DURATION_DAYS = range(75, 105)
-
-
-def _load_bronze(ticker: str) -> dict:
-    path = Path(settings.bronze_path) / "companyfacts" / f"{ticker}.json"
-    return json.loads(path.read_text())
 
 
 def _load_concepts() -> list[tuple[int, str, list[str]]]:
@@ -140,9 +136,12 @@ def _group_by_period(entries: list[dict]) -> dict[str, list[dict]]:
     return by_end
 
 
-def transform_ticker(ticker: str, security_id: int, concepts: list[tuple[int, str, list[str]]]) -> int:
-    facts = _load_bronze(ticker)["facts"]
-    rows = []
+def build_fact_rows(
+    payload: dict, security_id: int, concepts: list[tuple[int, str, list[str]]]
+) -> list[dict]:
+    """One company's companyfacts payload -> financial_facts rows."""
+    facts = payload.get("facts") or {}
+    rows: list[dict] = []
 
     for concept_id, _concept_key, xbrl_tags in concepts:
         entries = _entries_for_concept(facts, xbrl_tags)
@@ -178,9 +177,12 @@ def transform_ticker(ticker: str, security_id: int, concepts: list[tuple[int, st
                     restated=version > 1,
                 ))
 
+    return rows
+
+
+def _flush(rows: list[dict]) -> int:
     if not rows:
         return 0
-
     stmt = insert(FinancialFact)
     stmt = stmt.on_conflict_do_update(
         index_elements=["security_id", "concept_id", "fiscal_year", "fiscal_period", "version"],
@@ -194,17 +196,47 @@ def transform_ticker(ticker: str, security_id: int, concepts: list[tuple[int, st
     )
     with get_session() as session:
         session.execute(stmt, rows)
-
     return len(rows)
 
 
-def transform_all(ticker_to_id: dict[str, int]) -> int:
+def transform_all(cik_to_id: dict[int, int], flush_every: int = 20_000) -> int:
+    """Stream companyfacts out of the bulk archive -> financial_facts.
+
+    Facts are accumulated across companies and flushed in batches: one INSERT
+    per company means thousands of round trips across the full universe, and
+    holding every row until the end would mean millions of dicts in memory.
+    """
+    archive = bulk.download(bulk.COMPANYFACTS_ZIP_URL, bulk.companyfacts_zip())
     concepts = _load_concepts()
-    return sum(transform_ticker(ticker, sid, concepts) for ticker, sid in ticker_to_id.items())
+
+    total = 0
+    seen = 0
+    pending: list[dict] = []
+
+    for cik, payload in bulk.iter_members(archive, set(cik_to_id)):
+        pending.extend(build_fact_rows(payload, cik_to_id[cik], concepts))
+        seen += 1
+        if len(pending) >= flush_every:
+            total += _flush(pending)
+            pending = []
+            log.info("silver: %d companies, %d facts", seen, total)
+
+    total += _flush(pending)
+    log.info("silver: %d companies, %d facts (done)", seen, total)
+    return total
 
 
 if __name__ == "__main__":
+    from sqlalchemy import select as _select
+
+    from etl.models import Company
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     with get_session() as session:
-        ticker_to_id = dict(session.execute(select(Company.ticker, Company.security_id)).all())
-    n = transform_all(ticker_to_id)
-    print(f"wrote {n} financial_facts rows for {len(ticker_to_id)} companies")
+        cik_to_id = dict(
+            session.execute(
+                _select(Company.cik, Company.security_id).where(Company.cik.isnot(None))
+            ).all()
+        )
+    n = transform_all(cik_to_id)
+    print(f"wrote {n} financial_facts rows for {len(cik_to_id)} companies")
