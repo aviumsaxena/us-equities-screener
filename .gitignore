@@ -15,10 +15,10 @@ dist/
 *.local
 *.tsbuildinfo
 
-# Env & secrets
+# Env & secrets — ignore every .env, but keep the *.example templates tracked
 .env
 .env.*
-!.env.example
+!*.example
 
 # Local data (bulk datasets shouldn't be committed)
 data/
@@ -29,3 +29,4 @@ data/
 .DS_Store
 .idea/
 .vscode/
+.env.prod

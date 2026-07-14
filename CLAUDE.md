@@ -64,3 +64,4 @@ Setup: `docker compose up -d` then `alembic upgrade head`. Install deps with
 - API dev server: `uvicorn api.main:app --reload`
 - Tests: `pytest etl/tests/ api/tests/`
 - Frontend dev: `npm install --prefix web && npm run dev --prefix web` (proxies /api → :8000)
+- Deploy: see [DEPLOY.md](./DEPLOY.md) — one VM, same-origin behind Caddy (no CORS surface)

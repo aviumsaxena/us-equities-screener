@@ -1,0 +1,36 @@
+# Caddy serves the React bundle and reverse-proxies the API from the SAME origin.
+#
+# That is the whole point of this layout: the browser only ever talks to one
+# host, so no CORS has to be enabled and no cross-origin surface exists. It also
+# means the API is never directly exposed -- only Caddy is.
+#
+# Caddy provisions and renews TLS automatically from the SITE_ADDRESS domain.
+
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	# API lives under /api/* and is stripped before hitting FastAPI
+	handle_path /api/* {
+		reverse_proxy api:8000
+	}
+
+	# everything else is the SPA
+	handle {
+		root * /srv/web
+		# client-side routes (/company/123) must fall back to index.html
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

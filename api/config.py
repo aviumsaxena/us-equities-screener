@@ -16,6 +16,23 @@ class Settings(BaseSettings):
     screen_default_limit: int = 100
     screen_max_limit: int = 500
 
+    # Per-IP throttle (api/ratelimit.py). /screen is public and runs a real query.
+    rate_limit_enabled: bool = True
+    rate_limit_requests: int = 60
+    rate_limit_window_seconds: int = 60
+    # Only enable behind a reverse proxy you control -- a client can forge
+    # X-Forwarded-For, so trusting it on a directly-exposed API lets anyone
+    # spoof an IP and sidestep the limit.
+    trust_proxy_header: bool = False
+
+    # Comma-separated origins for CORS. Empty (default) = same-origin only,
+    # which is the recommended deployment (web/ served behind the same host).
+    cors_origins: str = ""
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
     @property
     def async_database_url(self) -> str:
         url = self.database_url

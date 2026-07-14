@@ -1,7 +1,13 @@
-// Typed client for the FastAPI read layer. Paths go through Vite's /api proxy
-// in dev (see vite.config.ts), so the browser stays same-origin.
+// Typed client for the FastAPI read layer.
+//
+// Defaults to the same-origin path `/api` — in dev that's Vite's proxy, in
+// production it's the reverse proxy in front of both (see DEPLOY.md). Staying
+// same-origin means no CORS surface has to be opened at all.
+//
+// Set VITE_API_URL at build time only if the API lives on a different origin;
+// that also requires CORS_ORIGINS on the API side.
 
-const BASE = "/api";
+const BASE = import.meta.env.VITE_API_URL ?? "/api";
 
 export type FieldKind = "numeric" | "text" | "boolean";
 

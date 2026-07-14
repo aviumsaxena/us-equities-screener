@@ -12,11 +12,13 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from api import cache
+from api import cache, ratelimit
 from api.compiler import ScreenError
+from api.config import settings
 from api.db import engine
 from api.models import (
     CompanyResponse,
@@ -37,7 +39,24 @@ async def lifespan(app: FastAPI):
     await cache.client.aclose()
 
 
-app = FastAPI(title="Screener API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title="Screener API",
+    version="0.1.0",
+    lifespan=lifespan,
+    # every route is throttled per-IP; /health is exempt (see api/ratelimit.py)
+    dependencies=[Depends(ratelimit.check)],
+)
+
+# Only needed when web/ is served from a *different* origin than the API. The
+# recommended deployment puts both behind one host, where this stays empty and
+# no cross-origin access is granted at all.
+if settings.cors_origin_list:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origin_list,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type"],
+    )
 
 
 @app.get("/health")
