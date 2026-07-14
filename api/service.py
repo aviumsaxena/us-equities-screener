@@ -16,11 +16,12 @@ from sqlalchemy import select
 
 from api import cache
 from api.compiler import build_screen_query, encode_cursor
-from api.models import CompanyResponse, ScreenRequest, ScreenResponse
-from api.schema import fundamentals_periodic, screener_metrics
+from api.models import CompanyResponse, PriceBar, ScreenRequest, ScreenResponse
+from api.schema import daily_prices, fundamentals_periodic, screener_metrics
 from api.db import engine
 
 HISTORY_LIMIT = 12  # periods returned by the company drill-down
+PRICE_BARS_LIMIT = 400  # cap on OHLCV bars per /prices request
 
 
 def _jsonable(value):
@@ -95,3 +96,34 @@ async def get_company(security_id: int) -> CompanyResponse | None:
     }
     await cache.set_cached(key, json.dumps(payload))
     return CompanyResponse(**payload, cached=False)
+
+
+async def get_prices(security_id: int, days: int) -> list[PriceBar]:
+    """OHLCV bars for the chart, oldest -> newest (hypertable read)."""
+    days = max(1, min(days, PRICE_BARS_LIMIT))
+    version = await cache.current_version()
+    key = cache.make_key(version, f"prices:{security_id}:{days}")
+
+    hit = await cache.get_cached(key)
+    if hit is not None:
+        return [PriceBar(**bar) for bar in json.loads(hit)]
+
+    stmt = (
+        select(
+            daily_prices.c.dt,
+            daily_prices.c.open,
+            daily_prices.c.high,
+            daily_prices.c.low,
+            daily_prices.c.close,
+            daily_prices.c.volume,
+        )
+        .where(daily_prices.c.security_id == security_id)
+        .order_by(daily_prices.c.dt.desc())
+        .limit(days)
+    )
+    async with engine.connect() as conn:
+        rows = (await conn.execute(stmt)).mappings().all()
+
+    bars = [_row_to_dict(r) for r in reversed(rows)]  # chart wants oldest first
+    await cache.set_cached(key, json.dumps(bars))
+    return [PriceBar(**bar) for bar in bars]

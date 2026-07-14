@@ -352,11 +352,12 @@ The `api/` module implements §3.4–§3.7 plus a cache-aside `GET /company/{id}
 ---
 
 ## 5. Suggested next steps
-Done: the EDGAR extractor + silver/gold ETL, the `financial_concepts` seed, the `api/` `ScreenCompiler` + cache, the EOD price load, and the SIC reference-data load (all verified on a 20-ticker sample). Remaining:
-1. **`web/`** — the React query-builder + results grid over `/screen`. The API contract it needs is now complete: valuation, growth, quality, and sector/exchange filters all return real data.
-2. **Price history + adjustment** — the free tier caps us at ~100 trading days of *unadjusted* closes (§6). A paid tier / different vendor unlocks the 10y adjusted history that charts, 52-week-high screens, and the continuous aggregates assume.
+All three modules are built and verified end-to-end on a 20-ticker sample: the EDGAR extractor + silver/gold ETL, the `financial_concepts` seed, the SIC reference load, the EOD price load, the `api/` `ScreenCompiler` + cache, and the `web/` query-builder / results grid / company page. Remaining:
+1. **Scale out** — the pipeline has only ever run on 20 tickers. Widening to the full 8k universe is where the partitioning / hypertable / cache design actually gets exercised, and where Alpha Vantage's 25 req/day price cap becomes the binding constraint (it alone forces a paid tier or a different vendor).
+2. **Price history + adjustment** — the free tier caps us at ~100 trading days of *unadjusted* closes (§6). Deep adjusted history is what the price chart's range selector, 52-week-high screens, and the Timescale continuous aggregates all assume; none of them can exist until it lands.
 3. **Concept coverage** — extend `financial_concepts` so sector-specific tagging (bank revenue) and the remaining metrics (`ev_ebitda` needs D&A + cash; `dividend_yield` needs a dividends load) aren't sparse.
-4. **Scale out** — the pipeline has only ever run on 20 tickers. Widening to the full 8k universe is where the partitioning/hypertable/cache design actually gets exercised (and where Alpha Vantage's 25/day price cap becomes the binding constraint).
+4. **`web/` depth** — saved screens, nested AND/OR groups (the compiler already supports them; the UI exposes a flat rule list), and result-grid virtualization once page sizes outgrow a plain table.
+5. **Auth + per-user rate limiting** (§3.8) — deferred until there's a user model.
 
 ---
 

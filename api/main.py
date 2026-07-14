@@ -12,14 +12,15 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from sqlalchemy import text
 
 from api import cache
 from api.compiler import ScreenError
 from api.db import engine
-from api.models import CompanyResponse, ScreenRequest, ScreenResponse
-from api.service import get_company, run_screen
+from api.models import CompanyResponse, FieldInfo, PriceBar, ScreenRequest, ScreenResponse
+from api.schema import FIELDS
+from api.service import get_company, get_prices, run_screen
 
 
 @asynccontextmanager
@@ -51,6 +52,16 @@ async def health() -> dict:
     return {"status": status, "db": db_ok, "redis": redis_ok}
 
 
+@app.get("/fields", response_model=list[FieldInfo])
+async def fields() -> list[FieldInfo]:
+    """The screenable whitelist. The query builder renders itself from this, so
+    the UI can't offer a field/operator the compiler would reject."""
+    return [
+        FieldInfo(field=name, kind=spec.kind, ops=sorted(spec.ops))
+        for name, spec in sorted(FIELDS.items())
+    ]
+
+
 @app.post("/screen", response_model=ScreenResponse)
 async def screen(req: ScreenRequest) -> ScreenResponse:
     try:
@@ -65,3 +76,8 @@ async def company(security_id: int) -> CompanyResponse:
     if result is None:
         raise HTTPException(status_code=404, detail="company not found")
     return result
+
+
+@app.get("/prices/{security_id}", response_model=list[PriceBar])
+async def prices(security_id: int, days: int = Query(default=120, ge=1, le=400)) -> list[PriceBar]:
+    return await get_prices(security_id, days)

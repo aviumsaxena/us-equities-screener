@@ -85,3 +85,22 @@ class CompanyResponse(BaseModel):
     company: dict
     history: List[PeriodRow]
     cached: bool = False
+
+
+class FieldInfo(BaseModel):
+    """One screenable field, as advertised to clients. The query builder is
+    driven off this, so it can never offer a field or operator the compiler
+    would reject -- the whitelist stays the single source of truth."""
+
+    field: str
+    kind: str  # 'numeric' | 'text' | 'boolean'
+    ops: List[str]
+
+
+class PriceBar(BaseModel):
+    dt: str
+    open: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    close: float
+    volume: Optional[int] = None

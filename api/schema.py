@@ -53,6 +53,19 @@ screener_metrics = Table(
     Column("fundamentals_asof", Date),
 )
 
+daily_prices = Table(
+    "daily_prices",
+    metadata,
+    Column("security_id", BigInteger, primary_key=True),
+    Column("dt", Date, primary_key=True),
+    Column("open", Numeric),
+    Column("high", Numeric),
+    Column("low", Numeric),
+    Column("close", Numeric),
+    Column("adj_close", Numeric),
+    Column("volume", BigInteger),
+)
+
 fundamentals_periodic = Table(
     "fundamentals_periodic",
     metadata,

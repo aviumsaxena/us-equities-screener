@@ -10,7 +10,7 @@ Screener.in, but for US stocks. A data-driven web app that ingests fundamentals 
 `market_cap`, `pe_ttm`, `pb`, `ps_ttm` come from Alpha Vantage EOD;
 `sector`/`industry`/`exchange` come from SEC submissions (SIC-derived, 100%
 coverage). Still NULL: `ev_ebitda` (needs D&A + cash concepts) and
-`dividend_yield` (needs a dividends load). `web/` not started.
+`dividend_yield` (needs a dividends load). All three modules are built.
 
 Known data gaps (all correct-by-design, not bugs — see ARCHITECTURE §6):
 - Multi-share-class issuers (BRK-B, V) have no consolidated diluted EPS/share
@@ -28,9 +28,9 @@ Known data gaps (all correct-by-design, not bugs — see ARCHITECTURE §6):
 - **Data sources:** SEC EDGAR XBRL bulk (fundamentals + SIC/exchange reference, free); Alpha Vantage EOD (prices, free tier — swap in `etl/extract/prices.py` alone)
 
 ## Module layout
+- `web/` — React screener UI: query-builder, results grid, company page *(built)*
 - `etl/` — extract → bronze → silver → gold pipeline; writes the serving tables *(built)*
 - `api/` — FastAPI read layer over the gold tables + Redis; the `/screen` compiler *(built)*
-- `web/` — React screener UI *(not started)*
 
 Modules share only the DB contract (the gold tables) and must stay independently deployable.
 
@@ -55,4 +55,4 @@ Setup: `docker compose up -d` then `alembic upgrade head`. Install deps with
 - ETL run (sample): `python -m etl --sample`
 - API dev server: `uvicorn api.main:app --reload`
 - Tests: `pytest etl/tests/ api/tests/`
-- Frontend dev: _TBD_
+- Frontend dev: `npm install --prefix web && npm run dev --prefix web` (proxies /api → :8000)
