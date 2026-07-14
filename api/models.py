@@ -104,3 +104,13 @@ class PriceBar(BaseModel):
     low: Optional[float] = None
     close: float
     volume: Optional[int] = None
+
+
+class SearchHit(BaseModel):
+    security_id: int
+    ticker: Optional[str] = None
+    name: Optional[str] = None
+    sector: Optional[str] = None
+    exchange: Optional[str] = None
+    price: Optional[float] = None
+    market_cap: Optional[float] = None

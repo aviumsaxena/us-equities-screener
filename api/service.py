@@ -12,16 +12,17 @@ import hashlib
 import json
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import case, func, or_, select
 
 from api import cache
 from api.compiler import build_screen_query, encode_cursor
-from api.models import CompanyResponse, PriceBar, ScreenRequest, ScreenResponse
+from api.models import CompanyResponse, PriceBar, ScreenRequest, ScreenResponse, SearchHit
 from api.schema import daily_prices, fundamentals_periodic, screener_metrics
 from api.db import engine
 
 HISTORY_LIMIT = 12  # periods returned by the company drill-down
 PRICE_BARS_LIMIT = 400  # cap on OHLCV bars per /prices request
+SEARCH_LIMIT = 50
 
 
 def _jsonable(value):
@@ -96,6 +97,74 @@ async def get_company(security_id: int) -> CompanyResponse | None:
     }
     await cache.set_cached(key, json.dumps(payload))
     return CompanyResponse(**payload, cached=False)
+
+
+def escape_like(text: str) -> str:
+    """Neutralise LIKE wildcards in user input.
+
+    Without this, a query of `%` matches every company and `_` matches any
+    single character — the search silently stops meaning what the user typed.
+    Values are still bound parameters (never interpolated), so this is about
+    correctness rather than injection.
+    """
+    return text.replace("\\", r"\\").replace("%", r"\%").replace("_", r"\_")
+
+
+async def search_companies(query: str, limit: int = 10) -> list[SearchHit]:
+    """Find companies by ticker or name.
+
+    Searches `screener_metrics` rather than `companies`, for two reasons: it is
+    the screener's serving table (invariant #2), and a company absent from it has
+    no metrics — so returning it would hand the user a result that 404s on the
+    company page.
+
+    Ranked so the obvious answer comes first: an exact ticker beats a ticker
+    prefix, which beats a name prefix, which beats a match anywhere; ties break on
+    market cap. So "AAPL" finds Apple, and "micro" surfaces Microsoft rather than
+    a microcap.
+
+    Not cached: search terms are unbounded, so caching them would let anyone fill
+    Redis with junk keys. It's a scan of ~6k RAM-resident rows (§3.2) — microseconds.
+    """
+    raw = query.strip()
+    if not raw:
+        return []
+
+    escaped = escape_like(raw)
+    contains = f"%{escaped}%"
+    starts = f"{escaped}%"
+    sm = screener_metrics
+
+    rank = case(
+        (func.upper(sm.c.ticker) == raw.upper(), 0),
+        (sm.c.ticker.ilike(starts, escape="\\"), 1),
+        (sm.c.name.ilike(starts, escape="\\"), 2),
+        else_=3,
+    )
+
+    stmt = (
+        select(
+            sm.c.security_id,
+            sm.c.ticker,
+            sm.c.name,
+            sm.c.sector,
+            sm.c.exchange,
+            sm.c.price,
+            sm.c.market_cap,
+        )
+        .where(
+            or_(
+                sm.c.ticker.ilike(contains, escape="\\"),
+                sm.c.name.ilike(contains, escape="\\"),
+            )
+        )
+        .order_by(rank, func.coalesce(sm.c.market_cap, -1).desc(), sm.c.ticker)
+        .limit(min(limit, SEARCH_LIMIT))
+    )
+
+    async with engine.connect() as conn:
+        rows = (await conn.execute(stmt)).mappings().all()
+    return [SearchHit(**_row_to_dict(row)) for row in rows]
 
 
 async def get_prices(security_id: int, days: int) -> list[PriceBar]:

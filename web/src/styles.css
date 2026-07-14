@@ -78,6 +78,49 @@ body {
   color: var(--muted);
 }
 
+/* ---- company search ---- */
+.search {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+ul.hits {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  border-top: 1px solid var(--border);
+}
+ul.hits li + li {
+  border-top: 1px solid var(--border);
+}
+ul.hits a {
+  display: grid;
+  grid-template-columns: 72px minmax(140px, 1.6fr) minmax(110px, 1fr) 90px 100px;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 6px;
+  text-decoration: none;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+ul.hits a:hover {
+  background: #fafbfc;
+}
+.hit-ticker {
+  font-weight: 650;
+  color: var(--accent);
+}
+.hit-name,
+.hit-sector {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hit-num {
+  text-align: right;
+}
+
 /* ---- presets ---- */
 .presets {
   display: flex;

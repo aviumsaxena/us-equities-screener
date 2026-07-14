@@ -2,6 +2,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { getFields, runScreen, type ScreenRow } from "../api";
+import { CompanySearch } from "../components/CompanySearch";
 import { PRESETS, QueryBuilder, buildFilter, validateRules, type Rule } from "../components/QueryBuilder";
 import { ResultsGrid } from "../components/ResultsGrid";
 
@@ -74,6 +75,8 @@ export function ScreenerPage() {
 
   return (
     <>
+      <CompanySearch />
+
       <section className="presets">
         {PRESETS.map((preset, i) => (
           <button key={preset.name} className="chip" onClick={() => applyPreset(i)} type="button">

@@ -18,9 +18,16 @@ from sqlalchemy import text
 from api import cache
 from api.compiler import ScreenError
 from api.db import engine
-from api.models import CompanyResponse, FieldInfo, PriceBar, ScreenRequest, ScreenResponse
+from api.models import (
+    CompanyResponse,
+    FieldInfo,
+    PriceBar,
+    ScreenRequest,
+    ScreenResponse,
+    SearchHit,
+)
 from api.schema import FIELDS
-from api.service import get_company, get_prices, run_screen
+from api.service import get_company, get_prices, run_screen, search_companies
 
 
 @asynccontextmanager
@@ -81,3 +88,11 @@ async def company(security_id: int) -> CompanyResponse:
 @app.get("/prices/{security_id}", response_model=list[PriceBar])
 async def prices(security_id: int, days: int = Query(default=120, ge=1, le=400)) -> list[PriceBar]:
     return await get_prices(security_id, days)
+
+
+@app.get("/search", response_model=list[SearchHit])
+async def search(
+    q: str = Query(min_length=1, max_length=64, description="ticker or company name"),
+    limit: int = Query(default=10, ge=1, le=50),
+) -> list[SearchHit]:
+    return await search_companies(q, limit)

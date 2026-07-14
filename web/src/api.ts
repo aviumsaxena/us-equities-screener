@@ -88,6 +88,16 @@ export interface PriceBar {
   volume: number | null;
 }
 
+export interface SearchHit {
+  security_id: number;
+  ticker: string | null;
+  name: string | null;
+  sector: string | null;
+  exchange: string | null;
+  price: number | null;
+  market_cap: number | null;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -117,3 +127,6 @@ export const getCompany = (id: number) => request<CompanyResponse>(`/company/${i
 
 export const getPrices = (id: number, days = 120) =>
   request<PriceBar[]>(`/prices/${id}?days=${days}`);
+
+export const searchCompanies = (q: string, limit = 8) =>
+  request<SearchHit[]>(`/search?q=${encodeURIComponent(q)}&limit=${limit}`);
