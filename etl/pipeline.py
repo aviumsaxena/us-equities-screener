@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 
+from etl.cache import bump_screen_cache_version
 from etl.extract.edgar import extract_sample
 from etl.gold.metrics import run_gold
 from etl.seed.concepts import seed as seed_concepts
@@ -27,6 +28,9 @@ def run(tickers: list[str] | None = None) -> None:
 
     n_metrics = run_gold()
     log.info("wrote screener_metrics for %d companies", n_metrics)
+
+    # GOLD is fresh -> invalidate the screener's cache namespace (best-effort)
+    bump_screen_cache_version()
 
 
 if __name__ == "__main__":

@@ -332,7 +332,13 @@ Cache-aside keyed by a **stable hash of the normalized screen JSON** → store t
 For predicates that span periods — "revenue grew >10% for 4 straight quarters", "ROE > 15% every year for 5 years" — run a **windowed SQL over `fundamentals_periodic`** at ETL time and **materialize the boolean result** (`rev_up_4q`, `profitable_5y`) back into `screener_metrics`. The user-facing screen then stays a single-table filter. This is the pattern that keeps even complex historical logic O(indexed-scan) at query time.
 
 ### 3.7 Pagination
-**Keyset pagination** on `(market_cap, security_id)` rather than `OFFSET` — stable and fast even deep into large result sets.
+**Keyset pagination** on `(market_cap, security_id)` rather than `OFFSET` — stable and fast even deep into large result sets. `market_cap` is nullable (null until prices are wired in), so the implementation sorts and cursors on `COALESCE(market_cap, -1)` — a safe sentinel since a real cap is never negative — which keeps the cursor a clean non-null row-value comparison and degrades gracefully to `security_id` order while prices are stubbed.
+
+### 3.8 MVP API scope (as-built)
+The `api/` module implements §3.4–§3.7 plus a cache-aside `GET /company/{id}` drill-down (`screener_metrics` row + recent `fundamentals_periodic`) and a `GET /health` (DB + Redis liveness). Deferred until the pieces they depend on exist:
+- **Auth + per-user rate limiting** (§1) — need a user model; not built yet. The Redis token-bucket throttle is for the *paid price API* (ETL side), separate from this.
+- **Numeric transport** — storage stays `NUMERIC`, but JSON responses serialize numerics as floats for client ergonomics (a display concern, not the storage contract).
+- The compiler builds SQLAlchemy Core expressions against whitelisted columns (identities from the whitelist, values as bound params) — a concrete realization of invariant #3, equivalent to the `$1`-param SQL sketched in §3.4.
 
 ---
 
@@ -346,6 +352,8 @@ For predicates that span periods — "revenue grew >10% for 4 straight quarters"
 ---
 
 ## 5. Suggested next steps
-1. **Data-provider comparison** — current pricing/rate-limits/coverage for EOD OHLCV vendors (I can research live figures).
-2. **EDGAR XBRL → concept mapping** — the actual `financial_concepts` seed rows (tag lists per standardized metric).
-3. **Start a module** — pick one: the EDGAR extractor, the `ScreenCompiler`, or the React query-builder, and I'll write the code.
+Done: the EDGAR extractor + silver/gold ETL, the `financial_concepts` seed, and the `api/` `ScreenCompiler` + cache (verified on a 20-ticker sample). Remaining:
+1. **Prices** — pick an EOD OHLCV vendor (pricing/rate-limits/coverage comparison), load `daily_prices`, and light up the stubbed price-derived metrics (`market_cap`, `pe_ttm`, …).
+2. **Reference data** — ticker↔CIK is loaded, but GICS `sector`/`industry`/`exchange` on `companies` are still null; wire a reference source so sector screens work.
+3. **`web/`** — the React query-builder + results grid over `/screen`.
+4. **Concept coverage** — extend `financial_concepts` for sector-specific tagging (e.g. bank revenue) so financials aren't sparse.

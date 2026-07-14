@@ -5,7 +5,10 @@ Screener.in, but for US stocks. A data-driven web app that ingests fundamentals 
 **Full design lives in [ARCHITECTURE.md](./ARCHITECTURE.md) — treat it as the source of truth.** Update it whenever an architecture decision changes.
 
 ## Status
-Design phase complete; implementation not started. No application code yet.
+`etl/` and `api/` built and verified end-to-end against the Docker stack on a
+20-ticker sample. Price data is not yet wired (EOD vendor still TBD), so
+price-derived columns (`price`, `market_cap`, `pe_ttm`, `pb`, `ps_ttm`,
+`ev_ebitda`, `dividend_yield`) are stubbed NULL. `web/` not started.
 
 ## Tech stack
 - **Backend:** FastAPI (async), SQLAlchemy 2.0 / asyncpg, Pydantic
@@ -15,10 +18,10 @@ Design phase complete; implementation not started. No application code yet.
 - **ETL:** Python, Prefect (plain cron for MVP); raw filings archived to S3/MinIO
 - **Data sources:** SEC EDGAR XBRL bulk (fundamentals, free); EOD price vendor (TBD)
 
-## Intended module layout (not yet created)
-- `etl/` — extract → bronze → silver → gold pipeline; writes the serving tables
-- `api/` — FastAPI read layer over the gold tables + Redis; the `/screen` compiler
-- `web/` — React screener UI
+## Module layout
+- `etl/` — extract → bronze → silver → gold pipeline; writes the serving tables *(built)*
+- `api/` — FastAPI read layer over the gold tables + Redis; the `/screen` compiler *(built)*
+- `web/` — React screener UI *(not started)*
 
 Modules share only the DB contract (the gold tables) and must stay independently deployable.
 
@@ -36,8 +39,11 @@ Modules share only the DB contract (the gold tables) and must stay independently
 - Never commit secrets — use env vars / `.env` (gitignored); provide `.env.example`.
 
 ## Commands
-_Fill in as modules are built._
-- ETL run: _TBD_
-- API dev server: _TBD_
+Setup: `docker compose up -d` then `alembic upgrade head`. Install deps with
+`pip install -e ".[api,dev]"` (omit extras for an ETL-only deploy).
+- Infra: `docker compose up -d` (Postgres+TimescaleDB, Redis)
+- Migrations: `alembic upgrade head`
+- ETL run (sample): `python -m etl --sample`
+- API dev server: `uvicorn api.main:app --reload`
+- Tests: `pytest api/tests/`
 - Frontend dev: _TBD_
-- Tests: _TBD_
