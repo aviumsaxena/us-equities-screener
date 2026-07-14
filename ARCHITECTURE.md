@@ -352,8 +352,24 @@ The `api/` module implements §3.4–§3.7 plus a cache-aside `GET /company/{id}
 ---
 
 ## 5. Suggested next steps
-Done: the EDGAR extractor + silver/gold ETL, the `financial_concepts` seed, and the `api/` `ScreenCompiler` + cache (verified on a 20-ticker sample). Remaining:
-1. **Prices** — pick an EOD OHLCV vendor (pricing/rate-limits/coverage comparison), load `daily_prices`, and light up the stubbed price-derived metrics (`market_cap`, `pe_ttm`, …).
+Done: the EDGAR extractor + silver/gold ETL, the `financial_concepts` seed, the `api/` `ScreenCompiler` + cache, and the EOD price load (all verified on a 20-ticker sample). Remaining:
+1. **Price history + adjustment** — the free tier caps us at ~100 trading days of *unadjusted* closes (§6). A paid tier / different vendor unlocks the 10y adjusted history that charts, 52-week-high screens, and the continuous aggregates assume.
 2. **Reference data** — ticker↔CIK is loaded, but GICS `sector`/`industry`/`exchange` on `companies` are still null; wire a reference source so sector screens work.
 3. **`web/`** — the React query-builder + results grid over `/screen`.
-4. **Concept coverage** — extend `financial_concepts` for sector-specific tagging (e.g. bank revenue) so financials aren't sparse.
+4. **Concept coverage** — extend `financial_concepts` so sector-specific tagging (bank revenue) and the remaining metrics (`ev_ebitda` needs D&A + cash; `dividend_yield` needs a dividends load) aren't sparse.
+
+---
+
+## 6. Data-source constraints (as-built)
+
+**Fundamentals — SEC EDGAR `companyfacts`.** Free and authoritative, but three quirks shape `etl/silver/transform.py` (details in its docstrings):
+- Per-fact `fy`/`fp` label the *filing*, not the fact — 10-Ks embed prior-year comparatives, 10-Qs embed TTM figures. Period identity is derived from each fact's own `(start, end)` dates, never the label.
+- Filers switch XBRL tags mid-history (ASC 606 moved revenue tags ~2018), so every synonym tag for a concept is merged.
+- `companyfacts` exposes only *undimensioned* facts. **Multi-share-class issuers** (BRK-B, V) report EPS and diluted share counts per class (behind a class axis), so they have no consolidated value — their `market_cap`/`pe_ttm`/`pb`/`ps_ttm` are correctly NULL rather than fabricated. Fixing this needs dimensional XBRL or a vendor share count.
+
+**Prices — Alpha Vantage free tier.** Chosen for MVP because the key is issued instantly with no email confirmation; the two other free no-key options are gated (stooq behind a JS proof-of-work bot check, Yahoo behind IP rate-limiting). Free-tier limits, all of which bound *history* rather than the latest close the gold metrics need:
+- 25 requests/day, 5/minute → the extractor spaces calls and fetches each ticker once, landing raw JSON to bronze so re-running GOLD never re-fetches.
+- `outputsize=full` is premium → we get ~100 trading days, not 10 years.
+- `TIME_SERIES_DAILY` is unadjusted (adjusted close is premium) → `adj_close` is stored equal to `close`.
+
+All of this is isolated in `etl/extract/prices.py`; swapping vendors touches that module and nothing else. The API key lives in `.env` (gitignored) and the module mutes httpx's INFO request logging, since the vendor supports no header auth and would otherwise leak the key into logs via the query string.

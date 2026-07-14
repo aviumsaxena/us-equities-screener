@@ -5,6 +5,7 @@ import logging
 
 from etl.cache import bump_screen_cache_version
 from etl.extract.edgar import extract_sample
+from etl.extract.prices import extract_prices
 from etl.gold.metrics import run_gold
 from etl.seed.concepts import seed as seed_concepts
 from etl.silver.transform import transform_all
@@ -25,6 +26,9 @@ def run(tickers: list[str] | None = None) -> None:
 
     n_facts = transform_all(ticker_to_id)
     log.info("wrote %d financial_facts rows", n_facts)
+
+    n_prices = extract_prices(ticker_to_id)
+    log.info("wrote %d daily_prices rows", n_prices)
 
     n_metrics = run_gold()
     log.info("wrote screener_metrics for %d companies", n_metrics)

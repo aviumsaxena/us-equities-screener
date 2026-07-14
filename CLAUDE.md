@@ -6,9 +6,17 @@ Screener.in, but for US stocks. A data-driven web app that ingests fundamentals 
 
 ## Status
 `etl/` and `api/` built and verified end-to-end against the Docker stack on a
-20-ticker sample. Price data is not yet wired (EOD vendor still TBD), so
-price-derived columns (`price`, `market_cap`, `pe_ttm`, `pb`, `ps_ttm`,
-`ev_ebitda`, `dividend_yield`) are stubbed NULL. `web/` not started.
+20-ticker sample, **including prices**: `price`, `market_cap`, `pe_ttm`, `pb`,
+`ps_ttm` are populated from Alpha Vantage EOD. Still NULL: `ev_ebitda` (needs
+D&A + cash concepts) and `dividend_yield` (needs a dividends load).
+`web/` not started.
+
+Known data gaps (all correct-by-design NULLs, not bugs — see ARCHITECTURE §6):
+- Multi-share-class issuers (BRK-B, V) have no consolidated diluted EPS/share
+  count in SEC companyfacts, so their `market_cap`/`pe_ttm`/`pb`/`ps_ttm` are NULL.
+- `sector`/`industry`/`exchange` are NULL — no GICS reference source loaded yet,
+  so sector screens run but match nothing.
+- Free-tier prices give ~100 trading days of history, not the 10y target.
 
 ## Tech stack
 - **Backend:** FastAPI (async), SQLAlchemy 2.0 / asyncpg, Pydantic
@@ -16,7 +24,7 @@ price-derived columns (`price`, `market_cap`, `pe_ttm`, `pb`, `ps_ttm`,
 - **Cache:** Redis (screen-result cache + external-API rate limiting)
 - **Frontend:** React + Vite, TanStack Query, lightweight-charts
 - **ETL:** Python, Prefect (plain cron for MVP); raw filings archived to S3/MinIO
-- **Data sources:** SEC EDGAR XBRL bulk (fundamentals, free); EOD price vendor (TBD)
+- **Data sources:** SEC EDGAR XBRL bulk (fundamentals, free); Alpha Vantage EOD (prices, free tier — swap in `etl/extract/prices.py` alone)
 
 ## Module layout
 - `etl/` — extract → bronze → silver → gold pipeline; writes the serving tables *(built)*

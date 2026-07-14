@@ -1,14 +1,17 @@
-"""Gold: financial_facts -> fundamentals_periodic + screener_metrics.
+"""Gold: financial_facts (+ daily_prices) -> fundamentals_periodic + screener_metrics.
 
 Idempotent and re-runnable: recomputes every ratio from the latest version
 of each financial_facts row and upserts the gold tables. Price-derived
-columns (price, market_cap, pe_ttm, pb, ps_ttm, ev_ebitda, dividend_yield)
-stay NULL until an EOD price vendor is wired in -- everything here is
-fundamentals-only.
+columns (price, market_cap, pe_ttm, pb, ps_ttm) come from the latest
+daily_prices close × the latest fundamentals; ev_ebitda and dividend_yield
+stay NULL pending more source data (D&A + cash concepts / a dividends load).
 
-MVP simplification: "TTM"/"latest" uses the most recent annual (fp='FY')
-period rather than a true trailing-twelve-month roll-up of quarters; that
-refinement lands once quarterly data is reliably present for all tickers.
+MVP simplifications:
+- "TTM"/"latest" uses the most recent annual (fp='FY') period rather than a
+  true trailing-twelve-month roll-up of quarters.
+- market_cap uses diluted weighted-average shares (shares_diluted) as the
+  share-count proxy -- refine to point-in-time shares outstanding later.
+Both land once the underlying data is reliably present for all tickers.
 """
 from __future__ import annotations
 
@@ -20,7 +23,14 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
 from etl.db import get_session
-from etl.models import Company, FinancialConcept, FinancialFact, FundamentalsPeriodic, ScreenerMetrics
+from etl.models import (
+    Company,
+    DailyPrice,
+    FinancialConcept,
+    FinancialFact,
+    FundamentalsPeriodic,
+    ScreenerMetrics,
+)
 
 PERIODIC_COLUMNS = (
     "fiscal_year", "fiscal_period", "revenue", "net_income", "eps_diluted",
@@ -55,6 +65,16 @@ def _latest_facts(session) -> list:
         key = (r.security_id, r.concept_key, r.fiscal_year, r.fiscal_period)
         latest.setdefault(key, r)  # version DESC order -> first hit is the latest version
     return list(latest.values())
+
+
+def _latest_prices(session) -> dict:
+    """security_id -> latest (close, dt) via DISTINCT ON (one indexed pass)."""
+    stmt = (
+        select(DailyPrice.security_id, DailyPrice.dt, DailyPrice.close)
+        .distinct(DailyPrice.security_id)
+        .order_by(DailyPrice.security_id, DailyPrice.dt.desc())
+    )
+    return {r.security_id: (r.close, r.dt) for r in session.execute(stmt)}
 
 
 def _pivot(rows: list) -> dict:
@@ -144,7 +164,9 @@ def _history_flags(periods: dict) -> dict:
     return {"rev_up_4q": rev_up_4q, "profitable_5y": profitable_5y}
 
 
-def _build_screener_metrics_row(security_id: int, periods: dict, company: Company) -> dict:
+def _build_screener_metrics_row(
+    security_id: int, periods: dict, company: Company, price_row: Optional[tuple] = None
+) -> dict:
     row = {col: None for col in METRICS_COLUMNS}
     row["security_id"] = security_id
     row["ticker"] = company.ticker
@@ -155,6 +177,7 @@ def _build_screener_metrics_row(security_id: int, periods: dict, company: Compan
 
     fys = _sorted_periods(periods, fp="FY")
     if not fys:
+        _apply_price_metrics(row, price_row, revenue=None, total_equity=None, eps=None, shares=None)
         return row
 
     (_end0, latest), *rest = fys
@@ -195,13 +218,41 @@ def _build_screener_metrics_row(security_id: int, periods: dict, company: Compan
         fundamentals_asof=latest["period_end"],
     )
     row.update(_history_flags(periods))
+    _apply_price_metrics(
+        row,
+        price_row,
+        revenue=revenue,
+        total_equity=total_equity,
+        eps=latest.get("eps_diluted"),
+        shares=latest.get("shares_diluted"),
+    )
     return row
+
+
+def _apply_price_metrics(row, price_row, *, revenue, total_equity, eps, shares) -> None:
+    """Fill price-derived columns from the latest close + latest fundamentals.
+    Left NULL when price or the needed fundamental is missing."""
+    if price_row is None:
+        return
+    price, price_asof = price_row
+    row["price"] = price
+    row["price_asof"] = price_asof
+    if price is None:
+        return
+
+    market_cap = price * shares if shares is not None else None
+    row["market_cap"] = market_cap
+    # PE only where earnings are positive; a negative/zero P/E isn't meaningful
+    row["pe_ttm"] = _safe_div(price, eps) if (eps is not None and eps > 0) else None
+    row["ps_ttm"] = _safe_div(market_cap, revenue)
+    row["pb"] = _safe_div(market_cap, total_equity)
 
 
 def run_gold() -> int:
     with get_session() as session:
         rows = _latest_facts(session)
         companies = {c.security_id: c for c in session.execute(select(Company)).scalars()}
+        prices = _latest_prices(session)
 
     pivoted = _pivot(rows)
 
@@ -212,7 +263,9 @@ def run_gold() -> int:
         if company is None:
             continue
         periodic_rows.extend(_build_fundamentals_periodic_rows(security_id, periods))
-        metrics_rows.append(_build_screener_metrics_row(security_id, periods, company))
+        metrics_rows.append(
+            _build_screener_metrics_row(security_id, periods, company, prices.get(security_id))
+        )
 
     with get_session() as session:
         if periodic_rows:
