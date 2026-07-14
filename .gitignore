@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+*.local
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+
+# Local data (bulk datasets shouldn't be committed)
+data/
+*.parquet
+*.zip
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
