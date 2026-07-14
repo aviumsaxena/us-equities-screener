@@ -9,10 +9,10 @@ class Settings(BaseSettings):
     sec_edgar_user_agent: str = "Screener ETL you@example.com"
     bronze_path: str = "data/bronze"
 
-    # EOD price vendor (Alpha Vantage). Free key issued instantly (no email
-    # confirmation) at https://www.alphavantage.co/support/#api-key; set in
-    # .env (gitignored) -- never commit it.
-    alphavantage_api_key: str = ""
+    # EOD price vendor (Polygon). Free key at https://polygon.io (now
+    # massive.com); set in .env (gitignored) -- never commit it. Sent as an
+    # Authorization: Bearer header, so it never appears in a URL.
+    polygon_api_key: str = ""
 
 
 settings = Settings()

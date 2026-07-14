@@ -7,7 +7,7 @@ Screener.in, but for US stocks. A data-driven web app that ingests fundamentals 
 ## Status
 `etl/` and `api/` built and verified end-to-end against the Docker stack on a
 20-ticker sample, **including prices and sector/industry**: `price`,
-`market_cap`, `pe_ttm`, `pb`, `ps_ttm` come from Alpha Vantage EOD;
+`market_cap`, `pe_ttm`, `pb`, `ps_ttm` come from Polygon grouped-daily EOD;
 `sector`/`industry`/`exchange` come from SEC submissions (SIC-derived, 100%
 coverage). Still NULL: `ev_ebitda` (needs D&A + cash concepts) and
 `dividend_yield` (needs a dividends load). All three modules are built.
@@ -17,7 +17,7 @@ Known data gaps (all correct-by-design, not bugs — see ARCHITECTURE §6):
   count in SEC companyfacts, so their `market_cap`/`pe_ttm`/`pb`/`ps_ttm` are NULL.
 - `sector` is SIC-derived, **not licensed GICS** — 15/20 of the sample match GICS;
   SIC's pre-digital buckets put GOOGL/META in IT and V/MA in Industrials.
-- Free-tier prices give ~100 trading days of unadjusted history, not the 10y target.
+- Free-tier prices give ~2 years of (split-adjusted) history, not the 10y target.
 
 ## Tech stack
 - **Backend:** FastAPI (async), SQLAlchemy 2.0 / asyncpg, Pydantic
@@ -25,7 +25,7 @@ Known data gaps (all correct-by-design, not bugs — see ARCHITECTURE §6):
 - **Cache:** Redis (screen-result cache + external-API rate limiting)
 - **Frontend:** React + Vite, TanStack Query, lightweight-charts
 - **ETL:** Python, Prefect (plain cron for MVP); raw filings archived to S3/MinIO
-- **Data sources:** SEC EDGAR XBRL bulk (fundamentals + SIC/exchange reference, free); Alpha Vantage EOD (prices, free tier — swap in `etl/extract/prices.py` alone)
+- **Data sources:** SEC EDGAR XBRL bulk (fundamentals + SIC/exchange reference, free); Polygon grouped-daily EOD (prices, free tier — one call returns the whole US market; swap in `etl/extract/prices.py` alone)
 
 ## Module layout
 - `web/` — React screener UI: query-builder, results grid, company page *(built)*
@@ -53,6 +53,7 @@ Setup: `docker compose up -d` then `alembic upgrade head`. Install deps with
 - Infra: `docker compose up -d` (Postgres+TimescaleDB, Redis)
 - Migrations: `alembic upgrade head`
 - ETL run (sample): `python -m etl --sample`
+- Price backfill (one-off, resumable): `python -m etl.extract.prices --days 504`
 - API dev server: `uvicorn api.main:app --reload`
 - Tests: `pytest etl/tests/ api/tests/`
 - Frontend dev: `npm install --prefix web && npm run dev --prefix web` (proxies /api → :8000)

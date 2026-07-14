@@ -15,6 +15,11 @@ from etl.tickers import SAMPLE_TICKERS
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("etl.pipeline")
 
+# The daily run only needs the last few sessions (the window absorbs weekends
+# and any late-published day). Deep history is a one-off, run explicitly:
+#   python -m etl.extract.prices --days 500
+DAILY_PRICE_WINDOW = 5
+
 
 def run(tickers: list[str] | None = None) -> None:
     tickers = tickers or SAMPLE_TICKERS
@@ -31,7 +36,7 @@ def run(tickers: list[str] | None = None) -> None:
     n_facts = transform_all(ticker_to_id)
     log.info("wrote %d financial_facts rows", n_facts)
 
-    n_prices = extract_prices(ticker_to_id)
+    n_prices = extract_prices(ticker_to_id, days=DAILY_PRICE_WINDOW)
     log.info("wrote %d daily_prices rows", n_prices)
 
     n_metrics = run_gold()

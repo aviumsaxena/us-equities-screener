@@ -353,8 +353,8 @@ The `api/` module implements §3.4–§3.7 plus a cache-aside `GET /company/{id}
 
 ## 5. Suggested next steps
 All three modules are built and verified end-to-end on a 20-ticker sample: the EDGAR extractor + silver/gold ETL, the `financial_concepts` seed, the SIC reference load, the EOD price load, the `api/` `ScreenCompiler` + cache, and the `web/` query-builder / results grid / company page. Remaining:
-1. **Scale out** — the pipeline has only ever run on 20 tickers. Widening to the full 8k universe is where the partitioning / hypertable / cache design actually gets exercised, and where Alpha Vantage's 25 req/day price cap becomes the binding constraint (it alone forces a paid tier or a different vendor).
-2. **Price history + adjustment** — the free tier caps us at ~100 trading days of *unadjusted* closes (§6). Deep adjusted history is what the price chart's range selector, 52-week-high screens, and the Timescale continuous aggregates all assume; none of them can exist until it lands.
+1. **Scale out** — the pipeline has only ever run on 20 tickers. Widening to the full 8k universe is where the partitioning / hypertable / cache design actually gets exercised. Prices are no longer the blocker: grouped-daily costs the same one call/day at 8,000 tickers as at 20, and the existing bronze snapshots already contain the whole market, so the price backfill for a wider universe is a replay with **zero** new API calls (§6). The remaining per-ticker cost is EDGAR (free, ~10 req/s) — that is what sets the scale-out budget.
+2. **Price history depth** — the free tier caps at ~2 years (§6), short of the 10-year target. Deep history is what the chart's range selector, 52-week-high screens, and the Timescale continuous aggregates assume. A paid Polygon tier or EODHD (~$20/mo, 30+ yrs, bulk) buys it without changing any code outside `etl/extract/prices.py`.
 3. **Concept coverage** — extend `financial_concepts` so sector-specific tagging (bank revenue) and the remaining metrics (`ev_ebitda` needs D&A + cash; `dividend_yield` needs a dividends load) aren't sparse.
 4. **`web/` depth** — saved screens, nested AND/OR groups (the compiler already supports them; the UI exposes a flat rule list), and result-grid virtualization once page sizes outgrow a plain table.
 5. **Auth + per-user rate limiting** (§3.8) — deferred until there's a user model.
@@ -372,9 +372,15 @@ All three modules are built and verified end-to-end on a 20-ticker sample: the E
 
 The assignment is therefore SIC-based and approximate: SIC predates the digital economy, so on the 20-ticker sample **15/20 match GICS**, while GOOGL/META (SIC 7370 "Computer Programming") land in Information Technology rather than Communication Services, and V/MA (SIC 7389 "Business Services, NEC") land in Industrials rather than Financials. We deliberately do **not** hand-patch those: a manual override list doesn't scale to 8k names and amounts to reconstructing the licensed taxonomy. Dropping in a licensed GICS feed later just repopulates the same `companies.sector`/`industry` columns — no other module changes.
 
-**Prices — Alpha Vantage free tier.** Chosen for MVP because the key is issued instantly with no email confirmation; the two other free no-key options are gated (stooq behind a JS proof-of-work bot check, Yahoo behind IP rate-limiting). Free-tier limits, all of which bound *history* rather than the latest close the gold metrics need:
-- 25 requests/day, 5/minute → the extractor spaces calls and fetches each ticker once, landing raw JSON to bronze so re-running GOLD never re-fetches.
-- `outputsize=full` is premium → we get ~100 trading days, not 10 years.
-- `TIME_SERIES_DAILY` is unadjusted (adjusted close is premium) → `adj_close` is stored equal to `close`.
+**Prices — Polygon "Grouped Daily", free tier.** The decisive property is not price but **request shape**. Polygon's grouped-daily endpoint returns *every* US ticker's OHLCV bar for a trading day in **one call** (~12.4k tickers, verified), so API cost scales with **days of history, not with the size of the universe** — staying current is 1 call/day whether we track 20 tickers or 8,000.
 
-All of this is isolated in `etl/extract/prices.py`; swapping vendors touches that module and nothing else. The API key lives in `.env` (gitignored) and the module mutes httpx's INFO request logging, since the vendor supports no header auth and would otherwise leak the key into logs via the query string.
+That is why we left Alpha Vantage, which was *per-ticker*: at 8k tickers it needed 8k calls/day against a 25/day free cap — a wall no plan tier fixes, only widens. (The other free no-key options are simply gated: stooq behind a JS proof-of-work bot check, Yahoo behind hard IP rate-limiting. Tiingo was unreachable — its signup confirmation email never arrives.)
+
+Free-tier limits, measured rather than assumed:
+- **5 requests/minute, no daily cap** → the extractor sleeps ~13s between calls. A full 2-year backfill is ~504 calls ≈ 110 min; the daily incremental is one call.
+- **~2 years of history** (a 3-year-old date returns 403) → short of the 10-year target. The extractor detects the 403 and stops walking backwards instead of burning the rate limit on dates that will all fail.
+- `adjusted=true` → OHLC is split-adjusted, so `close` and `adj_close` hold the same value. Adjustment never affects the latest bar, which is what market cap and P/E consume.
+
+**Bronze holds the whole market, not just our universe.** Each day's raw response is landed verbatim (gzipped) and only then filtered to the tickers we track. Widening the universe from 20 to 8,000 therefore costs **zero** API calls — the backfill replays the existing bronze snapshots. This is exactly the "replayable ETL" the object store was always for (§1), and it is what makes the eventual scale-out cheap.
+
+All price code is isolated in `etl/extract/prices.py`; swapping vendors touches that module and nothing else. The key lives in `.env` (gitignored) and travels in an `Authorization: Bearer` header, never a query param — a previous vendor supported only query-string keys, and httpx's INFO request logging leaked one into the console. The module now mutes that logger regardless, as defence in depth.
