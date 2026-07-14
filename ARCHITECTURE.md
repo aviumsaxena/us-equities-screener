@@ -367,6 +367,19 @@ All three modules are built and verified end-to-end on a 20-ticker sample: the E
 
 **One row per filer, not per security.** `companies.cik` is UNIQUE, so each CIK gets one row. But **~960 of the ~7,636 filers list more than one share class** (GOOGL/GOOG, BRK-B/BRK-A, FOXA/FOX). We keep SEC's *first* listing, which is not arbitrary — SEC orders the primary/most-liquid class first, so first-wins yields the class a screener should show. (A length or alphabetical tie-break would pick GOOG and BRK-A instead; BRK-A trades ~1,500× BRK-B, which would poison every price-derived metric.) The consequences, both accepted for now: only the primary class is screenable, and a multi-class issuer's `market_cap` — that class's price × the *consolidated* share count — is an approximation. Representing every class properly means one row per **security** rather than per filer, which is what the surrogate `security_id` and `ticker_history` in §2 were designed to allow.
 
+**Data quality is the real work at scale.** Across 7,636 filers, six defects appeared that 20 mega-caps never exposed. Four aborted the run outright; two were worse, because they produced *plausible-looking* rows. All are guarded and regression-tested:
+
+| Defect | Real example | Guard |
+|---|---|---|
+| Filer dates a fact after the filing that reported it | 10-Q filed 2023 reporting a period ending **2031**; equity "as of" **2029** filed in 2020 | reject `period_end > filed` (silver). Instants have no duration, so nothing else catches them — and a bogus year hard-fails the range-partitioned insert |
+| Share count mis-tagged as EPS | UAMY filed EPS of **107,260,472** | reject EPS beyond $100k/share (BRK-A, the priciest US share, earns ~$40k) |
+| Any ratio overflows its column when the denominator ≈ 0 | shell with $1 revenue, $1M loss → net margin −1,000,000 vs `NUMERIC(8,4)` | value too large for its column → NULL, never a crash |
+| Volume exceeds int32 | ADTX traded **4,808,332,396** shares in one session | models must declare `BIGINT`; a bare `Mapped[int]` infers 32-bit |
+| **Currency silently read as USD** | Nomura files `Revenues` in JPY *and* USD → ¥4.76tn read as $4.76tn; ¥118.99 EPS → P/E of **0.08** | read only each concept's own unit (`USD`, `USD/shares`, `shares`) |
+| **ADR price ÷ ordinary-share count** | Alibaba (1 ADS : 8 ordinary) showed **$2,161B** and **140x P/E** vs a true ~$300B and ~17x | 20-F/40-F filers get NULL price multiples; the ratio isn't in SEC's data. Their fundamentals are unaffected |
+
+The recurring principle: **NULL beats a fabricated number.** A missing market cap is visible; a P/E quietly denominated in yen is not.
+
 Three EDGAR quirks then shape `etl/silver/transform.py` (details in its docstrings):
 - Per-fact `fy`/`fp` label the *filing*, not the fact — 10-Ks embed prior-year comparatives, 10-Qs embed TTM figures. Period identity is derived from each fact's own `(start, end)` dates, never the label.
 - Filers switch XBRL tags mid-history (ASC 606 moved revenue tags ~2018), so every synonym tag for a concept is merged.

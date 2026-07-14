@@ -5,19 +5,25 @@ Screener.in, but for US stocks. A data-driven web app that ingests fundamentals 
 **Full design lives in [ARCHITECTURE.md](./ARCHITECTURE.md) — treat it as the source of truth.** Update it whenever an architecture decision changes.
 
 ## Status
-`etl/` and `api/` built and verified end-to-end against the Docker stack on a
-20-ticker sample, **including prices and sector/industry**: `price`,
-`market_cap`, `pe_ttm`, `pb`, `ps_ttm` come from Polygon grouped-daily EOD;
-`sector`/`industry`/`exchange` come from SEC submissions (SIC-derived, 100%
-coverage). Still NULL: `ev_ebitda` (needs D&A + cash concepts) and
-`dividend_yield` (needs a dividends load). All three modules are built.
+All three modules built and running against the **full ~7,636-filer SEC universe**
+(previously a 20-ticker sample): 2.4M financial_facts, 5,789 companies with
+computed metrics, 400k+ daily prices. A screen over the whole universe returns
+in ~20ms.
 
-Known data gaps (all correct-by-design, not bugs — see ARCHITECTURE §6):
-- Multi-share-class issuers (BRK-B, V) have no consolidated diluted EPS/share
-  count in SEC companyfacts, so their `market_cap`/`pe_ttm`/`pb`/`ps_ttm` are NULL.
-- `sector` is SIC-derived, **not licensed GICS** — 15/20 of the sample match GICS;
-  SIC's pre-digital buckets put GOOGL/META in IT and V/MA in Industrials.
-- Free-tier prices give ~2 years of (split-adjusted) history, not the 10y target.
+Pipeline cost is near-flat in universe size: SEC bulk zips (one download each,
+streamed per CIK) + Polygon grouped-daily (one call returns the whole US market).
+Widening the universe again costs no new price API calls — bronze holds
+whole-market snapshots and is replayed.
+
+Known gaps (all correct-by-design NULLs — see ARCHITECTURE §6 for the full
+data-quality table):
+- **ADRs** (20-F/40-F filers, ~690) have NULL price multiples: the quoted price is
+  per ADS but the filed share count is in ordinary shares, and the ratio isn't in
+  SEC data. Their fundamentals (margins/ROE/growth) are fine.
+- Multi-class issuers: only the primary class is screenable (one row per filer).
+- `sector` is SIC-derived, **not licensed GICS** (~15/20 of a sample match GICS).
+- `ev_ebitda`, `dividend_yield` still NULL (need D&A + cash concepts / dividends load).
+- Free-tier prices give ~2 years of history, not the 10y target.
 
 ## Tech stack
 - **Backend:** FastAPI (async), SQLAlchemy 2.0 / asyncpg, Pydantic

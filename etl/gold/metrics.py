@@ -44,6 +44,65 @@ log = logging.getLogger("etl.gold")
 # companies per pass; bounds peak memory independent of universe size
 CHUNK_SIZE = 500
 
+# BRK-A, the priciest US share, earns ~$40k/share. Past $100k it's a mis-tag.
+MAX_PLAUSIBLE_EPS = Decimal(100_000)
+
+# No listed company has anywhere near a trillion shares (the biggest counts are
+# ~1e10, and extreme penny stocks reach ~1e11). Nomura filed a diluted share
+# count of 3,041,190,068,000,000 -- 3 QUADRILLION, a million times its real ~3bn.
+MAX_PLAUSIBLE_SHARES = Decimal(10) ** 12
+
+# What each NUMERIC(p,s) column can actually hold: 10^(p-s).
+#
+# Ratios blow past these whenever the denominator is near zero, which is routine
+# across ~7.6k filers: a shell with $1 of revenue and a $1M loss has a "net
+# margin" of -1,000,000, and net_margin is NUMERIC(8,4) -- max 9,999.9999. That
+# doesn't store a silly number, it aborts the INSERT and takes the run with it.
+# A metric too large for its column is meaningless anyway, so it becomes NULL:
+# garbage in, NULL out, never a crash.
+_COLUMN_LIMITS: dict[str, Decimal] = {
+    # NUMERIC(8,4)
+    "gross_margin": Decimal(10) ** 4,
+    "operating_margin": Decimal(10) ** 4,
+    "net_margin": Decimal(10) ** 4,
+    "roe": Decimal(10) ** 4,
+    "roce": Decimal(10) ** 4,
+    "revenue_growth_yoy": Decimal(10) ** 4,
+    "eps_growth_yoy": Decimal(10) ** 4,
+    "revenue_cagr_3y": Decimal(10) ** 4,
+    "dividend_yield": Decimal(10) ** 4,
+    # NUMERIC(10,4)
+    "debt_to_equity": Decimal(10) ** 6,
+    "current_ratio": Decimal(10) ** 6,
+    # NUMERIC(12,4)
+    "pe_ttm": Decimal(10) ** 8,
+    "pb": Decimal(10) ** 8,
+    "ps_ttm": Decimal(10) ** 8,
+    "ev_ebitda": Decimal(10) ** 8,
+    "interest_coverage": Decimal(10) ** 8,
+    "eps_diluted": Decimal(10) ** 8,
+    # NUMERIC(18,4) / NUMERIC(20,2)
+    "price": Decimal(10) ** 14,
+    "market_cap": Decimal(10) ** 18,
+    "revenue_ttm": Decimal(10) ** 18,
+    "revenue": Decimal(10) ** 18,
+    "net_income": Decimal(10) ** 18,
+    "total_assets": Decimal(10) ** 18,
+    "total_equity": Decimal(10) ** 18,
+    "total_debt": Decimal(10) ** 18,
+    "operating_cf": Decimal(10) ** 18,
+    "free_cf": Decimal(10) ** 18,
+}
+
+
+def _null_unstorable(row: dict) -> dict:
+    """NULL out any value too large for its destination column (see _COLUMN_LIMITS)."""
+    for column, limit in _COLUMN_LIMITS.items():
+        value = row.get(column)
+        if value is not None and abs(value) >= limit:
+            row[column] = None
+    return row
+
 
 def _latest_facts(session, security_ids: list[int]) -> list:
     """Latest version of every fact, for one chunk of companies.
@@ -81,6 +140,29 @@ def _latest_facts(session, security_ids: list[int]) -> list:
     return session.execute(stmt).all()
 
 
+def _foreign_private_issuers(session) -> set:
+    """security_ids whose fundamentals come from 20-F / 40-F filings.
+
+    These trade in the US as ADRs: the quoted price is per **ADS**, while the
+    share count they file is in **ordinary shares**, and the ADS:ordinary ratio
+    is nowhere in SEC's data. So every price multiple is wrong by exactly that
+    ratio -- Alibaba is 1 ADS : 8 ordinary shares, which is why it showed a
+    $2,161B market cap and a 140x P/E against a true ~$300B and ~17x, landing it
+    6th-largest in the universe.
+
+    We can't compute these without the ratio, so we don't pretend to: market_cap
+    and the price multiples are left NULL. Their *fundamentals* -- margins, ROE,
+    growth -- involve no price and stay perfectly good, so ADRs remain fully
+    screenable on everything except valuation.
+    """
+    stmt = (
+        select(FinancialFact.security_id)
+        .where(FinancialFact.form_type.in_(("20-F", "40-F")))
+        .distinct()
+    )
+    return {row[0] for row in session.execute(stmt)}
+
+
 def _latest_prices(session) -> dict:
     """security_id -> latest (close, dt) via DISTINCT ON (one indexed pass)."""
     stmt = (
@@ -102,6 +184,8 @@ def _pivot(rows: list) -> dict:
     """
     out: dict = defaultdict(lambda: defaultdict(dict))
     for r in rows:
+        if r.concept_key == "eps_diluted" and not _plausible_eps(r.value):
+            continue
         bucket = out[r.security_id][r.period_end]
         bucket[r.concept_key] = r.value
         bucket["period_end"] = r.period_end
@@ -109,6 +193,21 @@ def _pivot(rows: list) -> dict:
         if bucket.get("fiscal_period") != "FY":
             bucket["fiscal_period"] = r.fiscal_period
     return out
+
+
+def _plausible_eps(value: Optional[Decimal]) -> bool:
+    """Reject an EPS that is obviously a mis-tagged share count.
+
+    Filers do this: United States Antimony (UAMY) tagged
+    `EarningsPerShareDiluted` with 69,697,150 / 92,711,336 / 107,260,472 -- under
+    the correct USD/shares unit -- while its real EPS is about -$0.01. Left in,
+    the largest overflows eps_diluted's NUMERIC(12,4) and kills the run, and the
+    ones that *do* fit silently poison pe_ttm and eps_growth_yoy, which is worse.
+
+    BRK-A, the highest-priced share in the US market, earns ~$40k/share, so
+    anything past $100k/share is not earnings.
+    """
+    return value is None or abs(value) <= MAX_PLAUSIBLE_EPS
 
 
 def _sorted_periods(periods: dict, fp: Optional[str] = None) -> list:
@@ -156,7 +255,7 @@ def _build_fundamentals_periodic_rows(security_id: int, periods: dict) -> list[d
             operating_cf=operating_cf,
             free_cf=free_cf,
         ))
-    return rows
+    return [_null_unstorable(r) for r in rows]
 
 
 def _history_flags(periods: dict) -> dict:
@@ -179,7 +278,11 @@ def _history_flags(periods: dict) -> dict:
 
 
 def _build_screener_metrics_row(
-    security_id: int, periods: dict, company: Company, price_row: Optional[tuple] = None
+    security_id: int,
+    periods: dict,
+    company: Company,
+    price_row: Optional[tuple] = None,
+    is_adr: bool = False,
 ) -> dict:
     row = {col: None for col in METRICS_COLUMNS}
     row["security_id"] = security_id
@@ -191,8 +294,11 @@ def _build_screener_metrics_row(
 
     fys = _sorted_periods(periods, fp="FY")
     if not fys:
-        _apply_price_metrics(row, price_row, revenue=None, total_equity=None, eps=None, shares=None)
-        return row
+        _apply_price_metrics(
+            row, price_row, revenue=None, total_equity=None, eps=None, shares=None,
+            net_income=None, is_adr=is_adr,
+        )
+        return _null_unstorable(row)
 
     (_end0, latest), *rest = fys
     prev = rest[0][1] if len(rest) >= 1 else None
@@ -239,21 +345,61 @@ def _build_screener_metrics_row(
         total_equity=total_equity,
         eps=latest.get("eps_diluted"),
         shares=latest.get("shares_diluted"),
+        net_income=net_income,
+        is_adr=is_adr,
     )
-    return row
+    return _null_unstorable(row)
 
 
-def _apply_price_metrics(row, price_row, *, revenue, total_equity, eps, shares) -> None:
+def _validated_shares(
+    shares: Optional[Decimal], net_income: Optional[Decimal], eps: Optional[Decimal]
+) -> Optional[Decimal]:
+    """Reject a share count that contradicts the company's own EPS and net income.
+
+    By definition shares ~= net_income / EPS, so a filer that reports all three
+    can be checked against itself. They do get it wrong: Bicara (BCAX) filed
+    54,676,896,000 diluted shares for FY2025 -- 1,000x its true ~54.7M -- which
+    valued a small biotech at **$1.5 trillion**, third-largest company in the
+    universe. Its own EPS (-2.52) and net income imply the correct count.
+
+    When the filed count and the implied one disagree by more than 10x, we don't
+    silently pick one: market_cap is left NULL. A missing market cap is obvious;
+    a fabricated one is not.
+
+    The cross-check needs EPS and net income to compare against, which a filer
+    may not report in USD -- so an absolute ceiling backstops it. That is not
+    belt-and-braces: Nomura has no recent *USD* earnings, so the cross-check had
+    nothing to work with and trusted its 3-quadrillion share count, valuing the
+    company at $29 QUADRILLION. A guard that only fires when other data happens
+    to exist is not a guard.
+    """
+    if shares is None or shares <= 0 or shares > MAX_PLAUSIBLE_SHARES:
+        return None
+    if net_income is None or eps is None or eps == 0:
+        return shares  # nothing to cross-check against; the ceiling above stands
+    implied = abs(net_income / eps)
+    if implied == 0:
+        return shares
+    ratio = shares / implied
+    return None if (ratio > 10 or ratio < Decimal("0.1")) else shares
+
+
+def _apply_price_metrics(
+    row, price_row, *, revenue, total_equity, eps, shares, net_income, is_adr=False
+) -> None:
     """Fill price-derived columns from the latest close + latest fundamentals.
     Left NULL when price or the needed fundamental is missing."""
     if price_row is None:
         return
     price, price_asof = price_row
+    # the ADR's quoted price is real and useful; it just can't be combined with a
+    # per-ordinary-share count (see _foreign_private_issuers)
     row["price"] = price
     row["price_asof"] = price_asof
-    if price is None:
+    if price is None or is_adr:
         return
 
+    shares = _validated_shares(shares, net_income, eps)
     market_cap = price * shares if shares is not None else None
     row["market_cap"] = market_cap
     # PE only where earnings are positive; a negative/zero P/E isn't meaningful
@@ -289,7 +435,8 @@ def run_gold(chunk_size: int = CHUNK_SIZE) -> int:
     """
     with get_session() as session:
         companies = {c.security_id: c for c in session.execute(select(Company)).scalars()}
-        prices = _latest_prices(session)  # one row per company; small
+        prices = _latest_prices(session)
+        adrs = _foreign_private_issuers(session)  # one row per company; small
 
     security_ids = sorted(companies)
     written = 0
@@ -310,7 +457,10 @@ def run_gold(chunk_size: int = CHUNK_SIZE) -> int:
                 continue
             periodic_rows.extend(_build_fundamentals_periodic_rows(security_id, periods))
             metrics_rows.append(
-                _build_screener_metrics_row(security_id, periods, company, prices.get(security_id))
+                _build_screener_metrics_row(
+                    security_id, periods, company, prices.get(security_id),
+                    is_adr=security_id in adrs,
+                )
             )
 
         with get_session() as session:

@@ -13,7 +13,17 @@ import datetime as dt
 from decimal import Decimal
 from typing import List, Optional
 
-from sqlalchemy import ARRAY, Boolean, Date, ForeignKey, Numeric, SmallInteger, String, Text
+from sqlalchemy import (
+    ARRAY,
+    BigInteger,
+    Boolean,
+    Date,
+    ForeignKey,
+    Numeric,
+    SmallInteger,
+    String,
+    Text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -21,10 +31,19 @@ class Base(DeclarativeBase):
     pass
 
 
+# The DB declares these columns BIGINT (see the migrations). A bare `Mapped[int]`
+# would have SQLAlchemy infer 32-bit Integer and bind params as ::INTEGER, which
+# silently works until a value crosses 2,147,483,647 -- then the INSERT dies with
+# "integer out of range". That is not hypothetical: a penny stock (ADTX) traded
+# 4.8 BILLION shares in a single session, 2.2x the int32 ceiling. Keep these
+# explicit so the model matches the schema.
+_BIGINT = BigInteger
+
+
 class Company(Base):
     __tablename__ = "companies"
 
-    security_id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    security_id: Mapped[int] = mapped_column(_BIGINT, primary_key=True, autoincrement=True)
     cik: Mapped[Optional[int]] = mapped_column(unique=True)
     ticker: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -51,7 +70,7 @@ class FinancialConcept(Base):
 class FinancialFact(Base):
     __tablename__ = "financial_facts"
 
-    security_id: Mapped[int] = mapped_column(ForeignKey("companies.security_id"), primary_key=True)
+    security_id: Mapped[int] = mapped_column(_BIGINT, ForeignKey("companies.security_id"), primary_key=True)
     concept_id: Mapped[int] = mapped_column(ForeignKey("financial_concepts.concept_id"), primary_key=True)
     fiscal_year: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
     fiscal_period: Mapped[str] = mapped_column(Text, primary_key=True)  # 'FY','Q1'..'Q4'
@@ -66,7 +85,7 @@ class FinancialFact(Base):
 class FundamentalsPeriodic(Base):
     __tablename__ = "fundamentals_periodic"
 
-    security_id: Mapped[int] = mapped_column(ForeignKey("companies.security_id"), primary_key=True)
+    security_id: Mapped[int] = mapped_column(_BIGINT, ForeignKey("companies.security_id"), primary_key=True)
     period_end: Mapped[dt.date] = mapped_column(Date, primary_key=True)
     fiscal_year: Mapped[Optional[int]] = mapped_column(SmallInteger)
     fiscal_period: Mapped[Optional[str]] = mapped_column(Text)
@@ -83,7 +102,7 @@ class FundamentalsPeriodic(Base):
 class ScreenerMetrics(Base):
     __tablename__ = "screener_metrics"
 
-    security_id: Mapped[int] = mapped_column(ForeignKey("companies.security_id"), primary_key=True)
+    security_id: Mapped[int] = mapped_column(_BIGINT, ForeignKey("companies.security_id"), primary_key=True)
     # identity (denormalized)
     ticker: Mapped[Optional[str]] = mapped_column(Text)
     name: Mapped[Optional[str]] = mapped_column(Text)
@@ -125,11 +144,11 @@ class ScreenerMetrics(Base):
 class DailyPrice(Base):
     __tablename__ = "daily_prices"
 
-    security_id: Mapped[int] = mapped_column(ForeignKey("companies.security_id"), primary_key=True)
+    security_id: Mapped[int] = mapped_column(_BIGINT, ForeignKey("companies.security_id"), primary_key=True)
     dt: Mapped[dt.date] = mapped_column(Date, primary_key=True)
     open: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 4))
     high: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 4))
     low: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 4))
     close: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     adj_close: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 4))
-    volume: Mapped[Optional[int]] = mapped_column()
+    volume: Mapped[Optional[int]] = mapped_column(_BIGINT)

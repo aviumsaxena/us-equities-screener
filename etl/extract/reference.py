@@ -40,11 +40,18 @@ def parse_reference(payload: dict) -> dict:
 
 
 def _apply(updates: list[dict]) -> None:
+    """Bulk UPDATE against the Core table.
+
+    Deliberately not the ORM entity: an ORM bulk update with a WHERE clause
+    can't executemany (it wants to synchronize each persistent object), and we
+    have thousands of rows to write. Core has no session state to reconcile.
+    """
     if not updates:
         return
+    table = Company.__table__
     stmt = (
-        update(Company)
-        .where(Company.security_id == bindparam("_sid"))
+        update(table)
+        .where(table.c.security_id == bindparam("_sid"))
         .values(
             sector=bindparam("sector"),
             industry=bindparam("industry"),

@@ -19,7 +19,7 @@ import logging
 from datetime import date
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 
 from etl import bulk
@@ -43,25 +43,48 @@ def _load_concepts() -> list[tuple[int, str, list[str]]]:
     return [tuple(r) for r in rows]
 
 
-def _entries_for_tag(facts: dict, tag: str) -> list[dict]:
+# The XBRL unit each concept must be reported in. Everything not listed is a
+# monetary amount and must be USD.
+_CONCEPT_UNIT = {
+    "eps_diluted": "USD/shares",
+    "shares_diluted": "shares",
+}
+_MONETARY_UNIT = "USD"
+
+
+def expected_unit(concept_key: str) -> str:
+    return _CONCEPT_UNIT.get(concept_key, _MONETARY_UNIT)
+
+
+def _entries_for_tag(facts: dict, tag: str, unit: str) -> list[dict]:
+    """Entries for one tag **in one unit**.
+
+    Reading every unit indiscriminately silently corrupts foreign private
+    issuers, which report the same tag in several currencies. Nomura (NMR)
+    files `Revenues` under both JPY and USD: merging them read ¥4.76 trillion
+    as $4.76 trillion, and its ¥118.99 EPS as $118.99 -- which is precisely why
+    its P/E came out at 0.08 and its market cap at $29 QUADRILLION.
+
+    A US-equity screener wants USD, so we take USD and drop the rest. A filer
+    with no recent USD figures ends up with no metrics, which is the honest
+    outcome -- far better than a number that is silently in the wrong currency.
+    """
     node = facts.get("us-gaap", {}).get(tag)
     if not node:
         return []
-    entries: list[dict] = []
-    for unit_entries in node.get("units", {}).values():
-        entries.extend(unit_entries)
-    return entries
+    return list(node.get("units", {}).get(unit) or [])
 
 
-def _entries_for_concept(facts: dict, xbrl_tags: list[str]) -> list[dict]:
+def _entries_for_concept(facts: dict, xbrl_tags: list[str], concept_key: str) -> list[dict]:
     """Merges entries across every synonym tag for this concept -- filers
     commonly switch tags mid-history (e.g. ASC 606 adoption around 2018
     moved revenue from `Revenues` to `RevenueFromContractWithCustomer...`
     for many companies), so picking only the first tag with any data would
-    silently drop recent periods."""
+    silently drop recent periods. Only the concept's expected unit is read."""
+    unit = expected_unit(concept_key)
     entries: list[dict] = []
     for tag in xbrl_tags:
-        entries.extend(_entries_for_tag(facts, tag))
+        entries.extend(_entries_for_tag(facts, tag, unit))
     return entries
 
 
@@ -121,6 +144,26 @@ def _consistent_with(fp: str, e: dict) -> bool:
     return duration in ANNUAL_DURATION_DAYS if fp == "FY" else duration in QUARTER_DURATION_DAYS
 
 
+def _is_impossible(e: dict) -> bool:
+    """True for a fact whose period ends *after* the filing that reported it.
+
+    That is a filer typo, not data: you cannot report revenue for a quarter, or
+    a balance as of a date, that has not happened yet. Real examples in EDGAR --
+    a 10-Q filed 2023-05-15 with `end=2031-09-25`, and one filed 2020-08-14
+    reporting equity as of `2029-06-30`.
+
+    The duration filter below already rejects the *period* form of this (an
+    8-year "quarter" is not a clean annual or quarterly span), but **instant**
+    balance-sheet facts have no duration, so nothing else would catch them --
+    and a bogus year blows up the insert, because financial_facts is
+    range-partitioned on exactly that year.
+    """
+    end = date.fromisoformat(e["end"])
+    filed = e.get("filed")
+    horizon = date.fromisoformat(filed) if filed else date.today()
+    return end > horizon
+
+
 def _group_by_period(entries: list[dict]) -> dict[str, list[dict]]:
     """Groups by the fact's own end date -- not EDGAR's fy/fp label -- so
     the same real-world period never splits across two labels, and distinct
@@ -129,6 +172,8 @@ def _group_by_period(entries: list[dict]) -> dict[str, list[dict]]:
     for e in entries:
         end, val = e.get("end"), e.get("val")
         if not end or val is None:
+            continue
+        if _is_impossible(e):
             continue
         by_end.setdefault(end, []).append(e)
     for group in by_end.values():
@@ -143,8 +188,8 @@ def build_fact_rows(
     facts = payload.get("facts") or {}
     rows: list[dict] = []
 
-    for concept_id, _concept_key, xbrl_tags in concepts:
-        entries = _entries_for_concept(facts, xbrl_tags)
+    for concept_id, concept_key, xbrl_tags in concepts:
+        entries = _entries_for_concept(facts, xbrl_tags, concept_key)
         by_end = _group_by_period(entries)
 
         for end, group in by_end.items():
@@ -180,9 +225,31 @@ def build_fact_rows(
     return rows
 
 
+def ensure_fact_partitions(years: set[int]) -> None:
+    """Create any missing yearly partition of financial_facts.
+
+    ARCHITECTURE.md §2.4 specifies one partition per year, "add yearly in ETL" --
+    this is that step, and nothing was doing it. Without it the table hard-fails
+    on any year outside the range the migration happened to create (2016-2027),
+    so the pipeline would have broken in 2028 even with perfectly clean data.
+    """
+    sane = {y for y in years if MIN_FISCAL_YEAR <= y <= date.today().year + 1}
+    if not sane:
+        return
+    with get_session() as session:
+        for year in sorted(sane):
+            session.execute(
+                text(
+                    f"CREATE TABLE IF NOT EXISTS financial_facts_{year} "
+                    f"PARTITION OF financial_facts FOR VALUES FROM ({year}) TO ({year + 1})"
+                )
+            )
+
+
 def _flush(rows: list[dict]) -> int:
     if not rows:
         return 0
+    ensure_fact_partitions({r["fiscal_year"] for r in rows})
     stmt = insert(FinancialFact)
     stmt = stmt.on_conflict_do_update(
         index_elements=["security_id", "concept_id", "fiscal_year", "fiscal_period", "version"],
