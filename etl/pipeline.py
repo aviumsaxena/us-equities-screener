@@ -6,6 +6,7 @@ import logging
 from etl.cache import bump_screen_cache_version
 from etl.extract.edgar import extract_sample
 from etl.extract.prices import extract_prices
+from etl.extract.reference import extract_reference
 from etl.gold.metrics import run_gold
 from etl.seed.concepts import seed as seed_concepts
 from etl.silver.transform import transform_all
@@ -23,6 +24,9 @@ def run(tickers: list[str] | None = None) -> None:
 
     ticker_to_id = extract_sample(tickers)
     log.info("extracted %d companies to bronze", len(ticker_to_id))
+
+    n_ref = extract_reference(ticker_to_id)
+    log.info("refreshed reference data (sector/industry/exchange) for %d companies", n_ref)
 
     n_facts = transform_all(ticker_to_id)
     log.info("wrote %d financial_facts rows", n_facts)

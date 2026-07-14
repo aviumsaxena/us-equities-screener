@@ -352,11 +352,11 @@ The `api/` module implements §3.4–§3.7 plus a cache-aside `GET /company/{id}
 ---
 
 ## 5. Suggested next steps
-Done: the EDGAR extractor + silver/gold ETL, the `financial_concepts` seed, the `api/` `ScreenCompiler` + cache, and the EOD price load (all verified on a 20-ticker sample). Remaining:
-1. **Price history + adjustment** — the free tier caps us at ~100 trading days of *unadjusted* closes (§6). A paid tier / different vendor unlocks the 10y adjusted history that charts, 52-week-high screens, and the continuous aggregates assume.
-2. **Reference data** — ticker↔CIK is loaded, but GICS `sector`/`industry`/`exchange` on `companies` are still null; wire a reference source so sector screens work.
-3. **`web/`** — the React query-builder + results grid over `/screen`.
-4. **Concept coverage** — extend `financial_concepts` so sector-specific tagging (bank revenue) and the remaining metrics (`ev_ebitda` needs D&A + cash; `dividend_yield` needs a dividends load) aren't sparse.
+Done: the EDGAR extractor + silver/gold ETL, the `financial_concepts` seed, the `api/` `ScreenCompiler` + cache, the EOD price load, and the SIC reference-data load (all verified on a 20-ticker sample). Remaining:
+1. **`web/`** — the React query-builder + results grid over `/screen`. The API contract it needs is now complete: valuation, growth, quality, and sector/exchange filters all return real data.
+2. **Price history + adjustment** — the free tier caps us at ~100 trading days of *unadjusted* closes (§6). A paid tier / different vendor unlocks the 10y adjusted history that charts, 52-week-high screens, and the continuous aggregates assume.
+3. **Concept coverage** — extend `financial_concepts` so sector-specific tagging (bank revenue) and the remaining metrics (`ev_ebitda` needs D&A + cash; `dividend_yield` needs a dividends load) aren't sparse.
+4. **Scale out** — the pipeline has only ever run on 20 tickers. Widening to the full 8k universe is where the partitioning/hypertable/cache design actually gets exercised (and where Alpha Vantage's 25/day price cap becomes the binding constraint).
 
 ---
 
@@ -366,6 +366,10 @@ Done: the EDGAR extractor + silver/gold ETL, the `financial_concepts` seed, the 
 - Per-fact `fy`/`fp` label the *filing*, not the fact — 10-Ks embed prior-year comparatives, 10-Qs embed TTM figures. Period identity is derived from each fact's own `(start, end)` dates, never the label.
 - Filers switch XBRL tags mid-history (ASC 606 moved revenue tags ~2018), so every synonym tag for a concept is merged.
 - `companyfacts` exposes only *undimensioned* facts. **Multi-share-class issuers** (BRK-B, V) report EPS and diluted share counts per class (behind a class axis), so they have no consolidated value — their `market_cap`/`pe_ttm`/`pb`/`ps_ttm` are correctly NULL rather than fabricated. Fixing this needs dimensional XBRL or a vendor share count.
+
+**Reference data (sector / industry / exchange) — SEC `submissions`, not GICS.** §1 originally named GICS, but **GICS is proprietary** (S&P/MSCI licensed) and cannot be loaded freely. We instead use the **SIC** code SEC assigns to every filer, from the same `submissions` endpoint that gives us the exchange — free, no key, and it covers all 8k+ filers (the alternative, a vendor's sector endpoint, would need one call per ticker: ~320 days at Alpha Vantage's 25/day). `industry` is SEC's own SIC description; `sector` is mapped from the SIC code in `etl/sic.py` onto the familiar 11 GICS-style sector *names*.
+
+The assignment is therefore SIC-based and approximate: SIC predates the digital economy, so on the 20-ticker sample **15/20 match GICS**, while GOOGL/META (SIC 7370 "Computer Programming") land in Information Technology rather than Communication Services, and V/MA (SIC 7389 "Business Services, NEC") land in Industrials rather than Financials. We deliberately do **not** hand-patch those: a manual override list doesn't scale to 8k names and amounts to reconstructing the licensed taxonomy. Dropping in a licensed GICS feed later just repopulates the same `companies.sector`/`industry` columns — no other module changes.
 
 **Prices — Alpha Vantage free tier.** Chosen for MVP because the key is issued instantly with no email confirmation; the two other free no-key options are gated (stooq behind a JS proof-of-work bot check, Yahoo behind IP rate-limiting). Free-tier limits, all of which bound *history* rather than the latest close the gold metrics need:
 - 25 requests/day, 5/minute → the extractor spaces calls and fetches each ticker once, landing raw JSON to bronze so re-running GOLD never re-fetches.
