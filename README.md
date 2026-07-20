@@ -11,14 +11,46 @@ Think Screener.in, for US stocks.
 
 <sub>*A live screen over all 7,636 companies — `P/E < 20 AND revenue growth > 10%` — returned in ~20 ms.*</sub>
 
+## How it works
+
+The system does its thinking **once a day**, so that answering a question is just a lookup.
+Everything meets at the database — the loader and the website never talk to each other.
+
 ```
-┌── ETL ──────────────┐   ┌── API ─────────────┐   ┌── Web ──────────┐
-│ SEC bulk XBRL       │   │ FastAPI (async)    │   │ React + Vite    │
-│ Polygon grouped EOD │──►│ whitelist compiler │──►│ query builder   │
-│ bronze→silver→gold  │   │ Redis cache-aside  │   │ results grid    │
-└─────────────────────┘   └────────────────────┘   └─────────────────┘
-      PostgreSQL 16 + TimescaleDB  ·  Redis
+   ONCE A DAY  ·  all the expensive work happens here
+   ┌──────────────────────────────────────────────────────────┐
+   │   SEC filings ─┐                                         │
+   │                ├─► clean it up ─► work out every ratio   │
+   │  Daily prices ─┘   (one shape)     for all 7,636 firms   │
+   └────────────────────────────┬─────────────────────────────┘
+                                │  writes
+                                ▼
+                ┌─────────────────────────────────┐
+                │           PostgreSQL            │
+                │  one row per company, with      │
+                │  every metric already computed  │
+                └─────────────────────────────────┘
+                                ▲
+                                │  reads  ·  one indexed lookup, ~20 ms
+   ┌────────────────────────────┴─────────────────────────────┐
+   │   You type a filter ─► website ─► API ─► reads the row   │
+   └──────────────────────────────────────────────────────────┘
+   ON EVERY SEARCH  ·  nothing is calculated, only looked up
 ```
+
+**Top half — the loader (`etl/`).** Once a night it downloads company filings from the SEC and
+that day's closing prices, converts thousands of inconsistent accounting tags into one tidy
+shape, and calculates every ratio a user might screen on — P/E, margins, growth, debt levels —
+for all 7,636 companies. It writes the results as a single row per company.
+
+**Bottom half — the website (`web/`) and API (`api/`).** When you run a screen, nothing is
+computed. The API translates your filters into one database lookup against those pre-built rows
+and returns the matches. That's the whole reason it answers in ~20 ms instead of seconds.
+
+**Why the database sits in the middle.** The loader only ever *writes*; the API only ever
+*reads*. They share nothing but the table between them, so either can be rebuilt, restarted or
+replaced without touching the other — and if the nightly load fails, the site keeps serving
+yesterday's data instead of going down.
 
 | | |
 |---|---|
