@@ -30,3 +30,6 @@ data/
 .idea/
 .vscode/
 .env.prod
+
+# Local agent/editor tooling config
+.claude/

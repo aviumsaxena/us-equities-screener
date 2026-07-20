@@ -401,3 +401,61 @@ Free-tier limits, measured rather than assumed:
 **Bronze holds the whole market, not just our universe.** Each day's raw response is landed verbatim (gzipped) and only then filtered to the tickers we track. Widening the universe from 20 to 8,000 therefore costs **zero** API calls — the backfill replays the existing bronze snapshots. This is exactly the "replayable ETL" the object store was always for (§1), and it is what makes the eventual scale-out cheap.
 
 All price code is isolated in `etl/extract/prices.py`; swapping vendors touches that module and nothing else. The key lives in `.env` (gitignored) and travels in an `Authorization: Bearer` header, never a query param — a previous vendor supported only query-string keys, and httpx's INFO request logging leaked one into the console. The module now mutes that logger regardless, as defence in depth.
+
+---
+
+## 7. Design invariants
+
+These are the rules the implementation is not allowed to quietly break. Code comments
+throughout the repo cite them by number.
+
+1. **Precompute at ETL, never at query.** All ratios and growth figures are computed once
+   per daily run and stored in `screener_metrics`. A screen is a single indexed `SELECT` —
+   it never calls an external API and never recomputes a ratio.
+2. **The screener queries `screener_metrics` only** (denormalized, one row per company).
+   Normalized `financial_facts` is for storage and drill-down, not screening.
+3. **The `/screen` compiler is whitelist-driven.** Each field maps to
+   `{column, type, allowed ops}`; emit parameterized SQL with bound params only. Never
+   string-interpolate user input.
+4. **Redis cache uses versioned keys** (`screen:v{N}:{hash}`); bump `N` on GOLD refresh for
+   O(1) invalidation.
+5. **History screens precompute boolean flags** at ETL time (e.g. `rev_up_4q`) so
+   user-facing screens stay single-table filters.
+6. **Prices → Timescale hypertable** (compressed, continuous aggregates);
+   `financial_facts` → partitioned by `fiscal_year`; surrogate `security_id` everywhere,
+   because tickers get reused and reassigned.
+
+### Conventions
+
+- Monetary and numeric values are `NUMERIC` in SQL — **never floats**.
+- All timestamps UTC / `TIMESTAMPTZ`.
+- Never commit secrets — env vars / `.env` (gitignored), with a checked-in `.env.example`.
+
+### Module layout
+
+| Module | Role |
+|---|---|
+| `etl/` | extract → bronze → silver → gold; writes the serving tables |
+| `api/` | FastAPI read layer over the gold tables + Redis; the `/screen` compiler |
+| `web/` | React screener UI: query-builder, results grid, company page |
+
+The three modules share **only the database contract** (the gold tables) and stay
+independently deployable.
+
+### Command reference
+
+```bash
+docker compose up -d                          # Postgres+TimescaleDB, Redis
+alembic upgrade head                          # migrations
+pip install -e ".[api,dev]"                   # omit extras for an ETL-only deploy
+
+python -m etl                                 # full ~7.6k-filer universe
+python -m etl --sample                        # 20-ticker smoke run
+python -m etl.extract.prices --days 504       # one-off price backfill (resumable)
+
+uvicorn api.main:app --reload                 # API dev server → :8000
+npm run dev --prefix web                      # UI dev server → :5173 (proxies /api)
+pytest etl/tests/ api/tests/                  # test suite
+```
+
+Deployment: see [DEPLOY.md](./DEPLOY.md) — one VM, same-origin behind Caddy, no CORS surface.
