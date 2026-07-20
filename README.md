@@ -7,6 +7,10 @@ and growth ratio, and answers arbitrary boolean screens — *"P/E < 20 AND reven
 
 Think Screener.in, for US stocks.
 
+![The screener running a "P/E < 20 AND revenue growth > 10%" screen across the full US universe, returning 25 matches with price, market cap, P/E, P/B, ROE, net margin, revenue growth and debt/equity](docs/screenshot.png)
+
+<sub>*A live screen over all 7,636 companies — `P/E < 20 AND revenue growth > 10%` — returned in ~20 ms.*</sub>
+
 ```
 ┌── ETL ──────────────┐   ┌── API ─────────────┐   ┌── Web ──────────┐
 │ SEC bulk XBRL       │   │ FastAPI (async)    │   │ React + Vite    │
