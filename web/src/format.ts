@@ -78,6 +78,10 @@ export function money(value: number): string {
   if (abs >= 1e12) return `$${(value / 1e12).toFixed(2)}T`;
   if (abs >= 1e9) return `$${(value / 1e9).toFixed(1)}B`;
   if (abs >= 1e6) return `$${(value / 1e6).toFixed(1)}M`;
+  // Nano-caps are real across a 7.6k universe — Pineapple Financial's market cap
+  // is ~$642k. Without a K tier it rendered as "$642249.97" next to "$4.76T",
+  // which reads as a broken number rather than a small company.
+  if (abs >= 1e3) return `$${(value / 1e3).toFixed(0)}K`;
   return `$${value.toFixed(2)}`;
 }
 
