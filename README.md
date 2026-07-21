@@ -9,7 +9,31 @@ Think Screener.in, for US stocks.
 
 ![The screener running a "P/E < 20 AND revenue growth > 10%" screen across the full US universe, returning 25 matches with price, market cap, P/E, P/B, ROE, net margin, revenue growth and debt/equity](docs/screenshot.png)
 
-<sub>*A live screen over all 7,636 companies — `P/E < 20 AND revenue growth > 10%` — returned in ~20 ms.*</sub>
+<sub>**Build a screen.** Any combination of filters, over all 7,636 companies, answered in ~20 ms.
+Here: `P/E < 20 AND revenue growth > 10%` — 25 matches, led by Uber at 15.7× earnings growing 18%.</sub>
+
+---
+
+![The company page for Apple, showing four metric cards — valuation, profitability, growth and balance sheet — above a candlestick price chart](docs/company-page.png)
+
+<sub>**Drill into a company.** Every screenable metric, a daily price chart, and the underlying
+financial history — so a result is a starting point for research, not a dead end.</sub>
+
+---
+
+![Company search for the term "apple", returning Apple Inc. first, then Apple Hospitality REIT, Apple iSports, Pineapple Financial and two other pineapple-named companies, each with sector, price and market cap](docs/search.png)
+
+<sub>**Or search by name.** Ranked server-side so the obvious answer wins: an exact ticker beats a
+name prefix beats a match anywhere. The long tail is the point — `apple` also finds three
+*pine*apple companies, including a $642K nano-cap most free tools don't carry at all.</sub>
+
+---
+
+![A preset screen for high-ROE compounders, filtering ROE above 25% and profitable for 5 straight years, returning NVIDIA, Apple, Alphabet, Microsoft, Broadcom and Meta among 25 matches, with a "cached" badge on the results](docs/screen-roe.png)
+
+<sub>**Preset screens** cover common theses in one click. The `cached` badge means this result came
+from Redis — screens are cached under a version key that the nightly data refresh bumps, so the
+whole cache invalidates at once rather than going stale.</sub>
 
 ## How it works
 
